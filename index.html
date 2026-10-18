@@ -154,6 +154,16 @@ const materials = colors.map((color, i) => {
     return m
 })
 
+const decorationMaterials = ['grass-details', 'flower-details', 'mushroom-details'].map(name => {
+    const m = new BABYLON.StandardMaterial(name, scene)
+    m.diffuseColor = BABYLON.Color3.White()
+    m.emissiveColor = BABYLON.Color3.White()
+    m.disableLighting = true
+    m.useVertexColors = true
+    m.backFaceCulling = false
+    return m
+})
+
 const voxels = new Int8Array(N * N * H)
 const heights = new Int16Array(N * N)
 const waterLevels = new Int8Array(N * N)
@@ -385,6 +395,238 @@ function addTrees() {
             if (get(x, top + 2, z) === EMPTY) set(x, top + 2, z, LEAVES)
         }
     }
+}
+
+
+function addGroundDecorations() {
+    const grassBuffer = { p: [], n: [], c: [], i: [] }
+    const flowerBuffer = { p: [], n: [], c: [], i: [] }
+    const mushroomBuffer = { p: [], n: [], c: [], i: [] }
+
+    const greenPalette = [
+        [0.19, 0.43, 0.10], [0.28, 0.55, 0.14],
+        [0.35, 0.58, 0.18], [0.23, 0.49, 0.12]
+    ]
+    const flowerPalette = [
+        [0.96, 0.24, 0.32], [0.98, 0.70, 0.22],
+        [0.70, 0.39, 0.95], [0.96, 0.88, 0.76],
+        [0.95, 0.42, 0.73]
+    ]
+    const yellow = [1.0, 0.76, 0.20]
+    const leafGreen = [0.22, 0.48, 0.13]
+    const stemGreen = [0.20, 0.42, 0.12]
+    const cream = [0.96, 0.89, 0.68]
+
+    function triangle(buf, a, b, c, color) {
+        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2]
+        const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2]
+        let nx = uy * vz - uz * vy
+        let ny = uz * vx - ux * vz
+        let nz = ux * vy - uy * vx
+        const len = Math.hypot(nx, ny, nz) || 1
+        nx /= len; ny /= len; nz /= len
+
+        const base = buf.p.length / 3
+        for (const v of [a, b, c]) {
+            buf.p.push(v[0], v[1], v[2])
+            buf.n.push(nx, ny, nz)
+            buf.c.push(color[0], color[1], color[2], 1)
+        }
+        buf.i.push(base, base + 1, base + 2)
+    }
+
+    function doubleSidedTriangle(buf, a, b, c, color) {
+        triangle(buf, a, b, c, color)
+        triangle(buf, c, b, a, color)
+    }
+
+    function ellipsoid(buf, cx, cy, cz, rx, ry, rz, rotation, color, segments = 7, rings = 4) {
+        const points = []
+        const cosR = Math.cos(rotation), sinR = Math.sin(rotation)
+
+        for (let r = 0; r <= rings; r++) {
+            const lat = -Math.PI / 2 + Math.PI * r / rings
+            const ringRadius = Math.cos(lat)
+            for (let s = 0; s <= segments; s++) {
+                const lon = Math.PI * 2 * s / segments
+                const localX = rx * ringRadius * Math.cos(lon)
+                const localZ = rz * ringRadius * Math.sin(lon)
+                points.push([
+                    cx + localX * cosR + localZ * sinR,
+                    cy + ry * Math.sin(lat),
+                    cz - localX * sinR + localZ * cosR
+                ])
+            }
+        }
+
+        for (let r = 0; r < rings; r++) {
+            for (let s = 0; s < segments; s++) {
+                const a = points[r * (segments + 1) + s]
+                const b = points[r * (segments + 1) + s + 1]
+                const c = points[(r + 1) * (segments + 1) + s + 1]
+                const d = points[(r + 1) * (segments + 1) + s]
+                triangle(buf, a, b, c, color)
+                triangle(buf, a, c, d, color)
+            }
+        }
+    }
+
+    function cylinder(buf, x, z, y0, y1, radius0, radius1, color, segments = 6) {
+        const bottom = [], top = []
+        for (let s = 0; s < segments; s++) {
+            const angle = Math.PI * 2 * s / segments
+            const c = Math.cos(angle), sn = Math.sin(angle)
+            bottom.push([x + c * radius0, y0, z + sn * radius0])
+            top.push([x + c * radius1, y1, z + sn * radius1])
+        }
+
+        for (let s = 0; s < segments; s++) {
+            const next = (s + 1) % segments
+            triangle(buf, bottom[s], bottom[next], top[next], color)
+            triangle(buf, bottom[s], top[next], top[s], color)
+            triangle(buf, [x, y0, z], bottom[next], bottom[s], color)
+            triangle(buf, [x, y1, z], top[s], top[next], color)
+        }
+    }
+
+    function tuft(x, y, z, variant, scale) {
+        const color = greenPalette[variant % greenPalette.length]
+        const blades = 3 + (rand(x + 31, z + 47) > 0.55 ? 1 : 0)
+        for (let b = 0; b < blades; b++) {
+            const angle = b * Math.PI * 2 / blades + rand(x + b * 13, z + b * 19) * 0.8
+            const sideX = -Math.sin(angle) * 0.022 * scale
+            const sideZ = Math.cos(angle) * 0.022 * scale
+            const lean = 0.025 + rand(x + b * 23, z + b * 29) * 0.045
+            const height = (0.16 + rand(x + b * 37, z + b * 41) * 0.14) * scale
+            const bx = x + Math.cos(angle) * 0.012
+            const bz = z + Math.sin(angle) * 0.012
+            const left = [bx + sideX, y + 0.01, bz + sideZ]
+            const right = [bx - sideX, y + 0.01, bz - sideZ]
+            const tip = [
+                bx + Math.cos(angle) * lean,
+                y + height,
+                bz + Math.sin(angle) * lean
+            ]
+            doubleSidedTriangle(grassBuffer, left, right, tip, color)
+        }
+    }
+
+    function flower(x, y, z, variant, scale) {
+        const petalColor = flowerPalette[variant % flowerPalette.length]
+        const stemHeight = (0.20 + rand(x + 57, z + 61) * 0.10) * scale
+        const headY = y + stemHeight
+        cylinder(flowerBuffer, x, z, y + 0.01, headY, 0.012 * scale, 0.009 * scale, stemGreen, 5)
+
+        // A couple of tiny leaves make the stem read as a plant, not a post.
+        ellipsoid(
+            flowerBuffer, x + 0.027 * scale, y + stemHeight * 0.48,
+            z + 0.004 * scale, 0.034 * scale, 0.009 * scale, 0.016 * scale,
+            -0.35, leafGreen, 6, 3
+        )
+        ellipsoid(
+            flowerBuffer, x - 0.024 * scale, y + stemHeight * 0.64,
+            z - 0.003 * scale, 0.029 * scale, 0.008 * scale, 0.014 * scale,
+            0.55, leafGreen, 6, 3
+        )
+
+        const petalCount = 5
+        for (let p = 0; p < petalCount; p++) {
+            const angle = p * Math.PI * 2 / petalCount
+            const px = x + Math.cos(angle) * 0.027 * scale
+            const pz = z + Math.sin(angle) * 0.027 * scale
+            ellipsoid(
+                flowerBuffer, px, headY, pz,
+                0.035 * scale, 0.012 * scale, 0.022 * scale,
+                -angle, petalColor, 6, 3
+            )
+        }
+        ellipsoid(
+            flowerBuffer, x, headY + 0.006 * scale, z,
+            0.018 * scale, 0.014 * scale, 0.018 * scale,
+            0, yellow, 6, 3
+        )
+    }
+
+    function mushroom(x, y, z, variant, scale) {
+        const stemHeight = (0.095 + rand(x + 67, z + 71) * 0.055) * scale
+        const capRadius = (0.075 + rand(x + 73, z + 79) * 0.035) * scale
+        const capHeight = (0.045 + rand(x + 83, z + 89) * 0.018) * scale
+        const capColor = variant % 2 === 0 ? [0.76, 0.16, 0.10] : [0.48, 0.27, 0.13]
+
+        cylinder(
+            mushroomBuffer, x, z, y + 0.005, y + stemHeight,
+            0.018 * scale, 0.022 * scale, cream, 6
+        )
+        const capY = y + stemHeight + capHeight * 0.30
+        ellipsoid(
+            mushroomBuffer, x, capY, z,
+            capRadius, capHeight, capRadius * 0.94,
+            0, capColor, 8, 4
+        )
+
+        // Pale flecks on red caps help the tiny mushroom silhouette read clearly.
+        if (variant % 2 === 0) {
+            for (let spot = 0; spot < 4; spot++) {
+                const angle = spot * Math.PI * 0.5 + 0.35
+                const sx = x + Math.cos(angle) * capRadius * 0.48
+                const sz = z + Math.sin(angle) * capRadius * 0.48
+                ellipsoid(
+                    mushroomBuffer, sx, capY + capHeight * 0.66, sz,
+                    0.010 * scale, 0.004 * scale, 0.009 * scale,
+                    0, cream, 5, 2
+                )
+            }
+        }
+    }
+
+    for (let x = 1; x < N - 1; x++) {
+        for (let z = 1; z < N - 1; z++) {
+            const col = ci(x, z)
+            if (waterLevels[col] !== EMPTY) continue
+
+            const groundY = heights[col]
+            if (get(x, groundY, z) !== GRASS || get(x, groundY + 1, z) !== EMPTY) continue
+
+            // One roll per tile: grass is common, flowers less common,
+            // and mushrooms are deliberately rare.
+            const roll = rand(x + 307, z + 811)
+            const px = x + 0.5 + (rand(x + 97, z + 131) - 0.5) * 0.36
+            const pz = z + 0.5 + (rand(x + 139, z + 173) - 0.5) * 0.36
+            const py = groundY + 1
+
+            if (roll < 0.25) {
+                tuft(px, py, pz, Math.floor(rand(x + 181, z + 199) * greenPalette.length),
+                    0.75 + rand(x + 211, z + 223) * 0.55)
+            } else if (roll < 0.285) {
+                flower(px, py, pz, Math.floor(rand(x + 227, z + 239) * flowerPalette.length),
+                    0.78 + rand(x + 241, z + 251) * 0.42)
+            } else if (roll < 0.293) {
+                mushroom(px, py, pz, Math.floor(rand(x + 257, z + 263) * 2),
+                    0.78 + rand(x + 269, z + 277) * 0.40)
+            }
+        }
+    }
+
+    function buildDecorationMesh(name, data, material) {
+        if (!data.p.length) return
+        const mesh = new BABYLON.Mesh(name, scene)
+        const vertexData = new BABYLON.VertexData()
+        vertexData.positions = data.p
+        vertexData.normals = data.n
+        vertexData.colors = data.c
+        vertexData.indices = data.i
+        vertexData.applyToMesh(mesh, false)
+        mesh.material = material
+        mesh.position.y = YOFF
+        mesh.isPickable = false
+        mesh.checkCollisions = false
+        mesh.alwaysSelectAsActiveMesh = false
+        meshes.push(mesh)
+    }
+
+    buildDecorationMesh('ground_grass_details', grassBuffer, decorationMaterials[0])
+    buildDecorationMesh('ground_flowers', flowerBuffer, decorationMaterials[1])
+    buildDecorationMesh('ground_mushrooms', mushroomBuffer, decorationMaterials[2])
 }
 
 const faces = [
@@ -630,6 +872,8 @@ function generate() {
         }
     }
 
+    addGroundDecorations()
+
     let found = false
 
     for (let radius = 0; radius < N / 2 && !found; radius++) {
@@ -730,6 +974,7 @@ window.addEventListener('beforeunload', () => {
     engine.stopRenderLoop()
     for (const m of meshes) m.dispose()
     for (const m of materials) m.dispose()
+    for (const m of decorationMaterials) m.dispose()
     scene.dispose()
     engine.dispose()
 }, { once: true })
