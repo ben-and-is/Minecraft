@@ -498,8 +498,12 @@ function addGroundDecorations() {
             const sideZ = Math.cos(angle) * 0.022 * scale
             const lean = 0.025 + rand(x + b * 23, z + b * 29) * 0.045
             const height = (0.16 + rand(x + b * 37, z + b * 41) * 0.14) * scale
-            const bx = x + Math.cos(angle) * 0.012
-            const bz = z + Math.sin(angle) * 0.012
+            // Distribute blade bases across most of the ground tile,
+            // so each tuft reads as a small patch instead of a tight spike.
+            const spreadX = (rand(x * 17 + b * 43, z * 19 + b * 47) - 0.5) * 0.72
+            const spreadZ = (rand(x * 23 + b * 53, z * 29 + b * 59) - 0.5) * 0.72
+            const bx = x + spreadX
+            const bz = z + spreadZ
             const left = [bx + sideX, y + 0.01, bz + sideZ]
             const right = [bx - sideX, y + 0.01, bz - sideZ]
             const tip = [
@@ -594,15 +598,15 @@ function addGroundDecorations() {
             const pz = z + 0.5 + (rand(x + 139, z + 173) - 0.5) * 0.36
             const py = groundY + 1
 
-            if (roll < 0.25) {
+            if (roll < 0.22) {
                 tuft(px, py, pz, Math.floor(rand(x + 181, z + 199) * greenPalette.length),
                     2 * (0.75 + rand(x + 211, z + 223) * 0.55))
-            } else if (roll < 0.285) {
+            } else if (roll < 0.255) {
                 flower(px, py, pz, Math.floor(rand(x + 227, z + 239) * flowerPalette.length),
-                    2 * (0.78 + rand(x + 241, z + 251) * 0.42))
-            } else if (roll < 0.293) {
+                    3 * (0.78 + rand(x + 241, z + 251) * 0.42))
+            } else if (roll < 0.263) {
                 mushroom(px, py, pz, Math.floor(rand(x + 257, z + 263) * 2),
-                    2 * (0.78 + rand(x + 269, z + 277) * 0.40))
+                    3 * (0.78 + rand(x + 269, z + 277) * 0.40))
             }
         }
     }
