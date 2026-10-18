@@ -184,8 +184,6 @@ const EYE_HEIGHT = 1.58
 const MOVE_SPEED = 5.5
 const RUN_SPEED = 9.0
 const JUMP_SPEED = 8.0
-const AUTO_JUMP_HEIGHT = 1.0
-const AUTO_STEP_DURATION = 0.1
 const GRAVITY = 22
 const WATER_GRAVITY = 5.0
 const WATER_BUOYANCY = 8.0
@@ -199,10 +197,6 @@ const EPS = .0001
 let feetY = 10
 let verticalVelocity = 0
 let grounded = false
-let autoStepActive = false
-let autoStepStartFeet = 0
-let autoStepTargetFeet = 0
-let autoStepElapsed = 0
 let yaw = 0
 let pitch = 0
 let mouseLocked = false
@@ -766,52 +760,7 @@ function canOccupy(x, z, feet) {
     return !overlapsSolid(x, z, feet)
 }
 
-function tryAutoJump(tx, tz) {
-    if (!grounded) return false
-
-    
-    
-    
-    const obstacleY = Math.floor(feetY)
-    const minX = Math.floor(tx - PLAYER_RADIUS + EPS)
-    const maxX = Math.floor(tx + PLAYER_RADIUS - EPS)
-    const minZ = Math.floor(tz - PLAYER_RADIUS + EPS)
-    const maxZ = Math.floor(tz + PLAYER_RADIUS - EPS)
-    const oldMinX = Math.floor(playerX - PLAYER_RADIUS + EPS)
-    const oldMaxX = Math.floor(playerX + PLAYER_RADIUS - EPS)
-    const oldMinZ = Math.floor(playerZ - PLAYER_RADIUS + EPS)
-    const oldMaxZ = Math.floor(playerZ + PLAYER_RADIUS - EPS)
-
-    let hasNewOneBlockObstacle = false
-    for (let bx = minX; bx <= maxX; bx++) {
-        for (let bz = minZ; bz <= maxZ; bz++) {
-            const wasAlreadyOverlapping =
-                bx >= oldMinX && bx <= oldMaxX &&
-                bz >= oldMinZ && bz <= oldMaxZ
-            if (wasAlreadyOverlapping) continue
-            if (!isSolid(bx, obstacleY, bz)) continue
-            if (!isSolid(bx, obstacleY - 1, bz)) continue
-            hasNewOneBlockObstacle = true
-        }
-    }
-
-    if (!hasNewOneBlockObstacle) return false
-
-    const targetFeet = feetY + AUTO_JUMP_HEIGHT
-    if (!canOccupy(tx, tz, targetFeet)) return false
-
-    playerX = tx
-    playerZ = tz
-    autoStepActive = true
-    autoStepStartFeet = feetY
-    autoStepTargetFeet = targetFeet
-    autoStepElapsed = 0
-    verticalVelocity = 0
-    grounded = false
-    return true
-}
-
-function moveHorizontal(dx, dz, allowAutoJump = true) {
+function moveHorizontal(dx, dz) {
     const distance = Math.max(Math.abs(dx), Math.abs(dz))
     const steps = Math.max(1, Math.ceil(distance / SUBSTEP))
     const sx = dx / steps, sz = dz / steps
@@ -820,15 +769,11 @@ function moveHorizontal(dx, dz, allowAutoJump = true) {
         const nextX = playerX + sx
         if (canOccupy(nextX, playerZ, feetY)) {
             playerX = nextX
-        } else if (allowAutoJump && tryAutoJump(nextX, playerZ)) {
-            return
         }
 
         const nextZ = playerZ + sz
         if (canOccupy(playerX, nextZ, feetY)) {
             playerZ = nextZ
-        } else if (allowAutoJump && tryAutoJump(playerX, nextZ)) {
-            return
         }
     }
 }
@@ -846,7 +791,6 @@ function moveVertical(delta) {
         } else {
             if (step < 0) {
                 grounded = true
-                autoStepActive = false
             }
             verticalVelocity = 0
             break
@@ -912,28 +856,8 @@ function getWaterSurface() {
     return surface
 }
 
-function advanceAutoStep(dt) {
-    if (!autoStepActive) return
-    autoStepElapsed += dt
-    const t = clamp(autoStepElapsed / AUTO_STEP_DURATION, 0, 1)
-    const eased = t * t * (3 - 2 * t)
-    feetY = autoStepStartFeet + (autoStepTargetFeet - autoStepStartFeet) * eased
-    if (t >= 1) {
-        feetY = autoStepTargetFeet
-        autoStepActive = false
-        grounded = true
-        verticalVelocity = 0
-    }
-}
-
 function updatePlayer(dt) {
     dt = Math.min(dt, .05)
-    if (autoStepActive) {
-        advanceAutoStep(dt)
-        syncCamera()
-        return
-    }
-
     const forward = new BABYLON.Vector3(
         Math.sin(yaw), 0, Math.cos(yaw)
     )
@@ -970,13 +894,7 @@ function updatePlayer(dt) {
             ? RUN_SPEED
             : MOVE_SPEED
         
-        moveHorizontal(mx * speed * dt, mz * speed * dt, !waterBeforeMove)
-    }
-
-    if (autoStepActive) {
-        advanceAutoStep(dt)
-        syncCamera()
-        return
+        moveHorizontal(mx * speed * dt, mz * speed * dt)
     }
 
     const waterSurface = getWaterSurface()
