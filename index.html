@@ -407,10 +407,9 @@ function addGroundDecorations() {
         [0.19, 0.43, 0.10], [0.28, 0.55, 0.14],
         [0.35, 0.58, 0.18], [0.23, 0.49, 0.12]
     ]
+    // Primary RGB flower colors: red, green, and blue.
     const flowerPalette = [
-        [0.96, 0.24, 0.32], [0.98, 0.70, 0.22],
-        [0.70, 0.39, 0.95], [0.96, 0.88, 0.76],
-        [0.95, 0.42, 0.73]
+        [1, 0, 0], [0, 1, 0], [0, 0, 1]
     ]
     const yellow = [1.0, 0.76, 0.20]
     const leafGreen = [0.22, 0.48, 0.13]
@@ -491,7 +490,7 @@ function addGroundDecorations() {
 
     function tuft(x, y, z, variant, scale) {
         const color = greenPalette[variant % greenPalette.length]
-        const blades = 12 + Math.floor(rand(x + 31, z + 47) * 5)
+        const blades = 20 + Math.floor(rand(x + 31, z + 47) * 11)
         for (let b = 0; b < blades; b++) {
             const angle = b * Math.PI * 2 / blades + rand(x + b * 13, z + b * 19) * 0.8
             const sideX = -Math.sin(angle) * 0.022 * scale
@@ -517,9 +516,10 @@ function addGroundDecorations() {
 
     function flower(x, y, z, variant, scale) {
         const petalColor = flowerPalette[variant % flowerPalette.length]
-        const stemHeight = (0.20 + rand(x + 57, z + 61) * 0.10) * scale
+        // Half-height and half-thickness flower stalk.
+        const stemHeight = (0.10 + rand(x + 57, z + 61) * 0.05) * scale
         const headY = y + stemHeight
-        cylinder(flowerBuffer, x, z, y + 0.01, headY, 0.012 * scale, 0.009 * scale, stemGreen, 5)
+        cylinder(flowerBuffer, x, z, y + 0.01, headY, 0.006 * scale, 0.0045 * scale, stemGreen, 5)
 
         // A couple of tiny leaves make the stem read as a plant, not a post.
         ellipsoid(
@@ -536,8 +536,9 @@ function addGroundDecorations() {
         const petalCount = 5
         for (let p = 0; p < petalCount; p++) {
             const angle = p * Math.PI * 2 / petalCount
-            const px = x + Math.cos(angle) * 0.027 * scale
-            const pz = z + Math.sin(angle) * 0.027 * scale
+            // Double the radius of the flower-head petal circle.
+            const px = x + Math.cos(angle) * 0.054 * scale
+            const pz = z + Math.sin(angle) * 0.054 * scale
             ellipsoid(
                 flowerBuffer, px, headY, pz,
                 0.070 * scale, 0.024 * scale, 0.044 * scale,
