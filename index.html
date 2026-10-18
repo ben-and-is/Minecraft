@@ -965,7 +965,7 @@ function updatePlayer(dt) {
         } else {
             // When idle, a damped buoyancy spring gently brings the player
             // back to the surface. It only acts when no vertical swim input is used.
-            const floatFeet = waterSurface - EYE_HEIGHT + 0.05
+            const floatFeet = waterSurface - EYE_HEIGHT + 0.05 + WATER_GRAVITY / WATER_BUOYANCY
             verticalVelocity -= WATER_GRAVITY * dt
             verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
         }
