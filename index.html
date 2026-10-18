@@ -491,7 +491,7 @@ function addGroundDecorations() {
 
     function tuft(x, y, z, variant, scale) {
         const color = greenPalette[variant % greenPalette.length]
-        const blades = 6 + Math.floor(rand(x + 31, z + 47) * 3)
+        const blades = 12 + Math.floor(rand(x + 31, z + 47) * 5)
         for (let b = 0; b < blades; b++) {
             const angle = b * Math.PI * 2 / blades + rand(x + b * 13, z + b * 19) * 0.8
             const sideX = -Math.sin(angle) * 0.022 * scale
@@ -540,7 +540,7 @@ function addGroundDecorations() {
             const pz = z + Math.sin(angle) * 0.027 * scale
             ellipsoid(
                 flowerBuffer, px, headY, pz,
-                0.035 * scale, 0.012 * scale, 0.022 * scale,
+                0.070 * scale, 0.024 * scale, 0.044 * scale,
                 -angle, petalColor, 6, 3
             )
         }
@@ -598,13 +598,13 @@ function addGroundDecorations() {
             const pz = z + 0.5 + (rand(x + 139, z + 173) - 0.5) * 0.36
             const py = groundY + 1
 
-            if (roll < 0.22) {
+            if (roll < 0.20) {
                 tuft(px, py, pz, Math.floor(rand(x + 181, z + 199) * greenPalette.length),
                     2 * (0.75 + rand(x + 211, z + 223) * 0.55))
-            } else if (roll < 0.255) {
+            } else if (roll < 0.235) {
                 flower(px, py, pz, Math.floor(rand(x + 227, z + 239) * flowerPalette.length),
                     3 * (0.78 + rand(x + 241, z + 251) * 0.42))
-            } else if (roll < 0.263) {
+            } else if (roll < 0.243) {
                 mushroom(px, py, pz, Math.floor(rand(x + 257, z + 263) * 2),
                     3 * (0.78 + rand(x + 269, z + 277) * 0.40))
             }
