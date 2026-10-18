@@ -190,6 +190,7 @@ const WATER_BUOYANCY = 8.0
 const WATER_DRAG = 3.0
 const SWIM_ACCELERATION = 24
 const MAX_SWIM_SPEED = 5.0
+const MAX_WATER_HORIZONTAL_SPEED = 4.5
 const MAX_FALL_SPEED = 28
 const SUBSTEP = .12
 const EPS = .0001
@@ -942,15 +943,19 @@ function updatePlayer(dt) {
 
     const len = Math.hypot(mx, mz)
     const waterBeforeMove = getWaterSurface() !== null
+    let horizontalSpeed = 0
 
     if (len > 0) {
         mx /= len
         mz /= len
-        const speed = keys.has('ShiftLeft') || keys.has('ShiftRight')
+        const requestedSpeed = keys.has('ShiftLeft') || keys.has('ShiftRight')
             ? RUN_SPEED
             : MOVE_SPEED
-        
-        moveHorizontal(mx * speed * dt, mz * speed * dt)
+        horizontalSpeed = waterBeforeMove
+            ? Math.min(requestedSpeed, MAX_WATER_HORIZONTAL_SPEED)
+            : requestedSpeed
+
+        moveHorizontal(mx * horizontalSpeed * dt, mz * horizontalSpeed * dt)
         if (autoStep) {
             syncCamera()
             return
@@ -985,7 +990,9 @@ function updatePlayer(dt) {
         } else {
             
             
-            const floatFeet = waterSurface - EYE_HEIGHT + 0.05 + WATER_GRAVITY / WATER_BUOYANCY
+            const speedRatio = horizontalSpeed / MAX_WATER_HORIZONTAL_SPEED
+            const floatFeet = waterSurface - EYE_HEIGHT + 0.05 +
+                WATER_GRAVITY / WATER_BUOYANCY - speedRatio * 1.1
             verticalVelocity -= WATER_GRAVITY * dt
             verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
         }
