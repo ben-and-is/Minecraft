@@ -793,13 +793,14 @@ function tryAutoJump(tx, tz) {
     }
 
     if (!hasNewOneBlockObstacle) return false
-    if (!canOccupy(tx, tz, feetY + 1)) return false
+    if (!canOccupy(tx, tz, feetY + AUTO_JUMP_HEIGHT)) return false
 
-    // Track this as a dedicated one-block hop, separate from a normal jump.
-    autoJumpActive = true
+    // Step straight onto the one-block surface instead of launching into an arc.
+    feetY += AUTO_JUMP_HEIGHT
+    verticalVelocity = 0
+    autoJumpActive = false
     autoJumpStartFeet = feetY
-    verticalVelocity = JUMP_SPEED
-    grounded = false
+    grounded = true
     return true
 }
 
