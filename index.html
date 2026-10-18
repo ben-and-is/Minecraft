@@ -147,6 +147,12 @@ const materials = colors.map((color, i) => {
         m.alpha = .76
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
+    } else if (i === LEAVES) {
+        // Vertex alpha varies per leaf block, between 85% and 95% opacity.
+        m.useVertexColors = true
+        m.useVertexAlpha = true
+        m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
+        m.needDepthPrePass = true
     } else {
         m.freeze()
     }
@@ -645,7 +651,7 @@ const faces = [
 
 function buildChunk(cx, cz) {
     const groups = Array.from({ length: MCOUNT }, () => ({
-        p: [], n: [], u: [], i: []
+        p: [], n: [], u: [], c: [], i: []
     }))
 
     const x0 = cx * CS, z0 = cz * CS
@@ -656,6 +662,12 @@ function buildChunk(cx, cz) {
             for (let x = x0; x < x1; x++) {
                 const type = get(x, y, z)
                 if (type === EMPTY) continue
+
+                // Keep each block's opacity consistent across all of its faces.
+                // The seeded value stays stable until a new world is generated.
+                const leafOpacity = type === LEAVES
+                    ? 0.85 + rand(x + y * 37, z + y * 61) * 0.10
+                    : 1
 
                 for (const f of faces) {
                     const neighbor = get(
@@ -673,6 +685,9 @@ function buildChunk(cx, cz) {
                         g.p.push(x + v[0], y + v[1], z + v[2])
                         g.n.push(...f.d)
                         g.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
+                        if (type === LEAVES) {
+                            g.c.push(1, 1, 1, leafOpacity)
+                        }
                     }
 
                     g.i.push(b, b + 1, b + 2, b, b + 2, b + 3)
@@ -693,6 +708,7 @@ function buildChunk(cx, cz) {
         vd.positions = g.p
         vd.normals = g.n
         vd.uvs = g.u
+        if (t === LEAVES) vd.colors = g.c
         vd.indices = g.i
         vd.applyToMesh(mesh, false)
 
