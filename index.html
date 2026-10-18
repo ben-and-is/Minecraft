@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voxel World</title>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+<style>
+    * {
+        box-sizing: border-box;
+    }
+
+    html,
+    body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+    }
+
+    body {
+        overflow: hidden;
+        font-family: system-ui, sans-serif;
+        background: #87ceeb;
+    }
+
+    canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+        outline: none;
+    }
+
+    .ui {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        max-width: min(340px, calc(100vw - 32px));
+        padding: 16px;
+        background: #17251ddd;
+        color: white;
+        border-radius: 12px;
+        box-shadow: 0 6px 24px #0002;
+        backdrop-filter: blur(8px);
+    }
+
+    .ui p {
+        margin: 8px 0 12px;
+        font-size: 14px;
+        line-height: 1.5;
+    }
+
+    button {
+        padding: 10px 14px;
+        border: 0;
+        border-radius: 7px;
+        background: #64b94c;
+        color: white;
+        font-weight: 700;
+        cursor: pointer;
+    }
+
+    button:hover {
+        background: #78c760;
+    }
+
+    button:focus-visible {
+        outline: 2px solid white;
+        outline-offset: 3px;
+    }
+
+    #status {
+        margin-top: 10px;
+        font-size: 12px;
+        opacity: 0.8;
+    }
+
+    #crosshair {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 5px;
+        height: 5px;
+        background: #fff;
+        border: 1px solid #333;
+        border-radius: 50%;
+        transform: translate(-50%, -50%);
+        pointer-events: none;
+    }
+</style>
+</head>
+<body>
+    <canvas id="c" aria-label="Interactive voxel world"></canvas>
+    <div class="ui">
+        <strong>🌍 Voxel World</strong>
+        <p>WASD to move · Mouse to look · Space to jump<br>Explore ponds, varied terrain, and forests.</p>
+        <button id="g" type="button">Generate World</button>
+        <div id="status">Click the world to capture the mouse.</div>
+    </div>
+    <div id="crosshair"></div>
+
+<script>
+(() => {
+'use strict'
+
+const canvas = document.getElementById('c')
+const status = document.getElementById('status')
+const engine = new BABYLON.Engine(canvas, true)
+const scene = new BABYLON.Scene(engine)
+
+scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
+scene.collisionsEnabled = false
+
+const N = 72, H = 32, CS = 16, YOFF = -5
+const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5
+const MCOUNT = 6
+
+const camera = new BABYLON.UniversalCamera(
+    'cam', new BABYLON.Vector3(N / 2, 10, N / 2), scene
+)
+camera.minZ = .05
+camera.fov = 1.15
+camera.inputs.clear()
+camera.rotationQuaternion = null
+camera.checkCollisions = false
+camera.applyGravity = false
+
+const hemi = new BABYLON.HemisphericLight(
+    'hemi', new BABYLON.Vector3(0, 1, 0), scene
+)
+hemi.intensity = .9
+
+const sun = new BABYLON.DirectionalLight(
+    'sun', new BABYLON.Vector3(-1, -2, -1), scene
+)
+sun.intensity = .5
+
+const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0']
+const materials = colors.map((color, i) => {
+    const m = new BABYLON.StandardMaterial('mat' + i, scene)
+    m.diffuseColor = BABYLON.Color3.FromHexString(color)
+    m.specularColor = BABYLON.Color3.Black()
+    m.backFaceCulling = false
+
+    if (i === WATER) {
+        m.diffuseColor = new BABYLON.Color3(.12, .48, .85)
+        m.alpha = .76
+        m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
+        m.needDepthPrePass = true
+    } else {
+        m.freeze()
+    }
+
+    return m
+})
+
+const voxels = new Int8Array(N * N * H)
+const heights = new Int16Array(N * N)
+const waterLevels = new Int8Array(N * N)
+let meshes = []
+let seed = 1
+let ponds = []
+let keys = new Set()
+
+const PLAYER_RADIUS = .30
+const PLAYER_HEIGHT = 1.8
+const EYE_HEIGHT = 1.58
+const MOVE_SPEED = 5.5
+const JUMP_SPEED = 8.0
+const GRAVITY = 22
+const MAX_FALL_SPEED = 28
+const SUBSTEP = .12
+const EPS = .0001
+
+let feetY = 10
+let verticalVelocity = 0
+let grounded = false
+let yaw = 0
+let pitch = 0
+let mouseLocked = false
+let jumpQueued = false
+let previousTime = performance.now()
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+const ci = (x, z) => z * N + x
+const idx = (x, y, z) => (y * N + z) * N + x
+
+function get(x, y, z) {
+    if (x < 0 || x >= N || z < 0 || z >= N || y < 0 || y >= H) return EMPTY
+    return voxels[idx(x, y, z)]
+}
+
+function set(x, y, z, t) {
+    if (x >= 0 && x < N && z >= 0 && z < N && y >= 0 && y < H) {
+        voxels[idx(x, y, z)] = t
+    }
+}
+
+function isSolid(x, y, z) {
+    const t = get(x, y, z)
+    return t !== EMPTY && t !== WATER
+}
+
+function rand(x, z) {
+    const n = Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453
+    return n - Math.floor(n)
+}
+
+function noise(x, z) {
+    const ix = Math.floor(x), iz = Math.floor(z)
+    const fx = x - ix, fz = z - iz
+    const u = fx * fx * (3 - 2 * fx), v = fz * fz * (3 - 2 * fz)
+    const a = rand(ix, iz), b = rand(ix + 1, iz)
+    const c = rand(ix, iz + 1), d = rand(ix + 1, iz + 1)
+    return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v
+}
+
+function terrainHeight(x, z) {
+    const hills =
+        5 +
+        Math.sin(x * .22 + seed) * 2 +
+        Math.cos(z * .25 + seed * .7) * 2 +
+        Math.sin((x + z) * .13) * 1.5
+
+    return clamp(Math.floor(hills) + 5, 5, H - 8)
+}
+
+function createHeightMap() {
+    for (let x = 0; x < N; x++) {
+        for (let z = 0; z < N; z++) {
+            heights[ci(x, z)] = terrainHeight(x, z)
+        }
+    }
+}
+
+function createPonds() {
+    ponds = []
+    waterLevels.fill(EMPTY)
+
+    const count = 1 + Math.floor(rand(713, 921) * 3)
+    let tries = 0
+
+    while (ponds.length < count && tries < 500) {
+        const k = tries++
+        const rx = 3 + rand(k * 41 + 7, k * 59 + 13) * 6
+        const rz = 3 + rand(k * 23 + 31, k * 17 + 17) * 5
+        const x = 10 + Math.floor(rand(k * 29 + 53, k * 11 + 29) * (N - 20))
+        const z = 10 + Math.floor(rand(k * 19 + 53, k * 11 + 29) * (N - 20))
+
+        const p = {
+            x, z, rx, rz,
+            level: 7 + Math.floor(rand(x + 101, z + 137) * 3)
+        }
+
+        if (ponds.some(q =>
+            Math.hypot((x - q.x) / (rx + q.rx + 4), (z - q.z) / (rz + q.rz + 4)) < 1
+        )) continue
+
+        ponds.push(p)
+    }
+
+    for (const p of ponds) {
+        for (let x = 1; x < N - 1; x++) {
+            for (let z = 1; z < N - 1; z++) {
+                const dx = (x - p.x) / p.rx
+                const dz = (z - p.z) / p.rz
+                const d = Math.sqrt(dx * dx + dz * dz)
+                const edge = d + .09 * (noise(x * .5, z * .5) - .5)
+
+                if (edge > 1.12) continue
+
+                const col = ci(x, z)
+
+                if (edge <= 1) {
+                    heights[col] = Math.min(
+                        heights[col],
+                        Math.max(2, p.level - 2 - Math.floor((1 - edge) * 3))
+                    )
+                    waterLevels[col] = p.level
+                } else {
+                    heights[col] = Math.max(heights[col], p.level + 1)
+                }
+            }
+        }
+    }
+}
+
+function voxelize() {
+    voxels.fill(EMPTY)
+
+    for (let x = 0; x < N; x++) {
+        for (let z = 0; z < N; z++) {
+            const h = heights[ci(x, z)]
+            const wet = waterLevels[ci(x, z)] !== EMPTY
+
+            for (let y = 0; y <= h; y++) {
+                set(x, y, z,
+                    y === h ? (wet ? DIRT : GRASS) :
+                    y >= h - 3 ? DIRT : STONE
+                )
+            }
+        }
+    }
+
+    for (let x = 0; x < N; x++) {
+        for (let z = 0; z < N; z++) {
+            const level = waterLevels[ci(x, z)]
+            if (level === EMPTY) continue
+
+            for (let y = heights[ci(x, z)] + 1; y <= level; y++) {
+                if (get(x, y, z) === EMPTY) set(x, y, z, WATER)
+            }
+        }
+    }
+}
+
+function addTrees() {
+    for (let x = 2; x < N - 2; x++) {
+        for (let z = 2; z < N - 2; z++) {
+            if (waterLevels[ci(x, z)] !== EMPTY || rand(x, z) <= .986) continue
+
+            const h = heights[ci(x, z)]
+            const trunk = 3 + Math.floor(rand(x + 47, z + 31) * 2)
+            const top = h + trunk
+
+            if (top + 2 >= H) continue
+
+            let clear = true
+            for (let y = h + 1; y <= top; y++) {
+                if (get(x, y, z) !== EMPTY) {
+                    clear = false
+                    break
+                }
+            }
+            if (!clear) continue
+
+            for (let y = h + 1; y <= top; y++) {
+                set(x, y, z, WOOD)
+            }
+
+            for (let dy = -1; dy <= 1; dy++) {
+                const r = dy === 1 ? 1 : 2
+
+                for (let dx = -r; dx <= r; dx++) {
+                    for (let dz = -r; dz <= r; dz++) {
+                        if (r === 2 && Math.abs(dx) === r && Math.abs(dz) === r) continue
+                        if (get(x + dx, top + dy, z + dz) === EMPTY) {
+                            set(x + dx, top + dy, z + dz, LEAVES)
+                        }
+                    }
+                }
+            }
+
+            if (get(x, top + 2, z) === EMPTY) set(x, top + 2, z, LEAVES)
+        }
+    }
+}
+
+const faces = [
+    { d: [1, 0, 0], v: [[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 0, 1]] },
+    { d: [-1, 0, 0], v: [[0, 0, 1], [0, 1, 1], [0, 1, 0], [0, 0, 0]] },
+    { d: [0, 1, 0], v: [[0, 1, 1], [1, 1, 1], [1, 1, 0], [0, 1, 0]] },
+    { d: [0, -1, 0], v: [[0, 0, 0], [1, 0, 0], [1, 0, 1], [0, 0, 1]] },
+    { d: [0, 0, 1], v: [[0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]] },
+    { d: [0, 0, -1], v: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]] }
+]
+
+function buildChunk(cx, cz) {
+    const groups = Array.from({ length: MCOUNT }, () => ({
+        p: [], n: [], u: [], i: []
+    }))
+
+    const x0 = cx * CS, z0 = cz * CS
+    const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
+
+    for (let y = 0; y < H; y++) {
+        for (let z = z0; z < z1; z++) {
+            for (let x = x0; x < x1; x++) {
+                const type = get(x, y, z)
+                if (type === EMPTY) continue
+
+                for (const f of faces) {
+                    const neighbor = get(
+                        x + f.d[0], y + f.d[1], z + f.d[2]
+                    )
+
+                    if (neighbor !== EMPTY &&
+                        !(type !== WATER && neighbor === WATER)) continue
+
+                    const g = groups[type]
+                    const b = g.p.length / 3
+
+                    for (let j = 0; j < 4; j++) {
+                        const v = f.v[j]
+                        g.p.push(x + v[0], y + v[1], z + v[2])
+                        g.n.push(...f.d)
+                        g.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
+                    }
+
+                    g.i.push(b, b + 1, b + 2, b, b + 2, b + 3)
+                }
+            }
+        }
+    }
+
+    for (let t = 0; t < MCOUNT; t++) {
+        const g = groups[t]
+        if (!g.p.length) continue
+
+        const mesh = new BABYLON.Mesh(
+            'chunk_' + cx + '_' + cz + '_' + t, scene
+        )
+        const vd = new BABYLON.VertexData()
+
+        vd.positions = g.p
+        vd.normals = g.n
+        vd.uvs = g.u
+        vd.indices = g.i
+        vd.applyToMesh(mesh, false)
+
+        mesh.material = materials[t]
+        mesh.position.y = YOFF
+        mesh.isPickable = false
+        mesh.checkCollisions = false
+
+        if (t === WATER) mesh.alphaIndex = 10
+        else mesh.freezeWorldMatrix()
+
+        meshes.push(mesh)
+    }
+}
+
+let playerX = N / 2
+let playerZ = N / 2
+
+function overlapsSolid(x, z, feet) {
+    const minX = Math.floor(x - PLAYER_RADIUS + EPS)
+    const maxX = Math.floor(x + PLAYER_RADIUS - EPS)
+    const minZ = Math.floor(z - PLAYER_RADIUS + EPS)
+    const maxZ = Math.floor(z + PLAYER_RADIUS - EPS)
+    const minY = Math.floor(feet + EPS)
+    const maxY = Math.floor(feet + PLAYER_HEIGHT - EPS)
+
+    for (let bx = minX; bx <= maxX; bx++) {
+        for (let bz = minZ; bz <= maxZ; bz++) {
+            for (let by = minY; by <= maxY; by++) {
+                if (isSolid(bx, by, bz)) return true
+            }
+        }
+    }
+    return false
+}
+
+function canOccupy(x, z, feet) {
+    if (x - PLAYER_RADIUS < 0 || x + PLAYER_RADIUS > N ||
+        z - PLAYER_RADIUS < 0 || z + PLAYER_RADIUS > N ||
+        feet < 0 || feet + PLAYER_HEIGHT >= H) {
+        return false
+    }
+    return !overlapsSolid(x, z, feet)
+}
+
+function moveHorizontal(dx, dz) {
+    const distance = Math.max(Math.abs(dx), Math.abs(dz))
+    const steps = Math.max(1, Math.ceil(distance / SUBSTEP))
+    const sx = dx / steps, sz = dz / steps
+
+    for (let i = 0; i < steps; i++) {
+        if (canOccupy(playerX + sx, playerZ, feetY)) {
+            playerX += sx
+        }
+        if (canOccupy(playerX, playerZ + sz, feetY)) {
+            playerZ += sz
+        }
+    }
+}
+
+function moveVertical(delta) {
+    if (delta === 0) return
+
+    const steps = Math.max(1, Math.ceil(Math.abs(delta) / SUBSTEP))
+    const step = delta / steps
+    grounded = false
+
+    for (let i = 0; i < steps; i++) {
+        if (canOccupy(playerX, playerZ, feetY + step)) {
+            feetY += step
+        } else {
+            if (step < 0) grounded = true
+            verticalVelocity = 0
+            break
+        }
+    }
+}
+
+function findGround(x, z) {
+    const bx = Math.floor(x)
+    const bz = Math.floor(z)
+
+    if (bx < 1 || bx >= N - 1 || bz < 1 || bz >= N - 1) return 10
+
+    for (let y = H - 2; y >= 0; y--) {
+        if (isSolid(bx, y, bz)) {
+            return y + 1
+        }
+    }
+    return 10
+}
+
+function syncCamera() {
+    camera.position.set(
+        playerX,
+        feetY + EYE_HEIGHT + YOFF,
+        playerZ
+    )
+    camera.rotation.set(pitch, yaw, 0)
+}
+
+function updatePlayer(dt) {
+    dt = Math.min(dt, .05)
+
+    const forward = new BABYLON.Vector3(
+        Math.sin(yaw), 0, Math.cos(yaw)
+    )
+    const right = new BABYLON.Vector3(
+        Math.cos(yaw), 0, -Math.sin(yaw)
+    )
+
+    let mx = 0, mz = 0
+
+    if (keys.has('KeyW')) {
+        mx += forward.x
+        mz += forward.z
+    }
+    if (keys.has('KeyS')) {
+        mx -= forward.x
+        mz -= forward.z
+    }
+    if (keys.has('KeyD')) {
+        mx += right.x
+        mz += right.z
+    }
+    if (keys.has('KeyA')) {
+        mx -= right.x
+        mz -= right.z
+    }
+
+    const len = Math.hypot(mx, mz)
+    if (len > 0) {
+        mx /= len
+        mz /= len
+        moveHorizontal(mx * MOVE_SPEED * dt, mz * MOVE_SPEED * dt)
+    }
+
+    if (jumpQueued) {
+        if (grounded) {
+            verticalVelocity = JUMP_SPEED
+            grounded = false
+        }
+        jumpQueued = false
+    }
+
+    verticalVelocity = Math.max(
+        -MAX_FALL_SPEED,
+        verticalVelocity - GRAVITY * dt
+    )
+
+    const wasFalling = verticalVelocity <= 0
+    moveVertical(verticalVelocity * dt)
+
+    if (wasFalling) {
+        const probe = .045
+        if (!canOccupy(playerX, playerZ, feetY - probe)) {
+            grounded = true
+            verticalVelocity = 0
+        }
+    }
+
+    syncCamera()
+}
+
+function generate() {
+    for (const m of meshes) m.dispose()
+    meshes = []
+
+    seed = Math.random() * 1000
+
+    voxels.fill(EMPTY)
+    waterLevels.fill(EMPTY)
+
+    createHeightMap()
+    createPonds()
+    voxelize()
+    addTrees()
+
+    for (let x = 0; x < N; x += CS) {
+        for (let z = 0; z < N; z += CS) {
+            buildChunk(x / CS, z / CS)
+        }
+    }
+
+    let found = false
+
+    for (let radius = 0; radius < N / 2 && !found; radius++) {
+        for (let x = Math.max(2, Math.floor(N / 2 - radius));
+            x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
+            for (let z = Math.max(2, Math.floor(N / 2 - radius));
+                z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
+
+                const floor = findGround(x + .5, z + .5)
+                if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
+
+                if (canOccupy(x + .5, z + .5, floor)) {
+                    playerX = x + .5
+                    playerZ = z + .5
+                    feetY = floor
+                    found = true
+                    break
+                }
+            }
+        }
+    }
+
+    if (!found) {
+        playerX = N / 2
+        playerZ = N / 2
+        feetY = findGround(playerX, playerZ)
+    }
+
+    verticalVelocity = 0
+    grounded = true
+    jumpQueued = false
+    yaw = 0
+    pitch = 0
+    syncCamera()
+
+    status.textContent = 'World ready. WASD to move, Space to jump.'
+}
+
+window.addEventListener('keydown', e => {
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+        e.preventDefault()
+    }
+
+    keys.add(e.code)
+
+    if (e.code === 'Space' && !e.repeat) {
+        jumpQueued = true
+    }
+})
+
+window.addEventListener('keyup', e => {
+    keys.delete(e.code)
+})
+
+window.addEventListener('blur', () => {
+    keys.clear()
+    jumpQueued = false
+})
+
+canvas.addEventListener('click', () => {
+    if (document.pointerLockElement !== canvas) {
+        canvas.requestPointerLock?.()
+    }
+})
+
+document.addEventListener('pointerlockchange', () => {
+    mouseLocked = document.pointerLockElement === canvas
+    status.textContent = mouseLocked
+        ? 'Mouse captured. Press Esc to release.'
+        : 'Click the world to capture the mouse.'
+})
+
+document.addEventListener('mousemove', e => {
+    if (!mouseLocked) return
+
+    yaw += e.movementX * .002
+    pitch += e.movementY * .002
+    pitch = clamp(pitch, -Math.PI / 2 + .02, Math.PI / 2 - .02)
+    syncCamera()
+})
+
+document.getElementById('g').addEventListener('click', generate)
+
+generate()
+
+engine.runRenderLoop(() => {
+    const now = performance.now()
+    const dt = (now - previousTime) / 1000
+    previousTime = now
+
+    updatePlayer(dt)
+    scene.render()
+})
+
+window.addEventListener('resize', () => engine.resize())
+
+window.addEventListener('beforeunload', () => {
+    engine.stopRenderLoop()
+    for (const m of meshes) m.dispose()
+    for (const m of materials) m.dispose()
+    scene.dispose()
+    engine.dispose()
+}, { once: true })
+
+})()
+</script>
+</body>
+</html>
