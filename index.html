@@ -184,6 +184,7 @@ const EYE_HEIGHT = 1.58
 const MOVE_SPEED = 5.5
 const RUN_SPEED = 9.0
 const JUMP_SPEED = 8.0
+const AUTO_JUMP_HEIGHT = 1.0
 const GRAVITY = 22
 const WATER_GRAVITY = 5.0
 const WATER_BUOYANCY = 8.0
@@ -197,6 +198,8 @@ const EPS = .0001
 let feetY = 10
 let verticalVelocity = 0
 let grounded = false
+let autoJumpActive = false
+let autoJumpStartFeet = 0
 let yaw = 0
 let pitch = 0
 let mouseLocked = false
@@ -792,6 +795,9 @@ function tryAutoJump(tx, tz) {
     if (!hasNewOneBlockObstacle) return false
     if (!canOccupy(tx, tz, feetY + 1)) return false
 
+    // Track this as a dedicated one-block hop, separate from a normal jump.
+    autoJumpActive = true
+    autoJumpStartFeet = feetY
     verticalVelocity = JUMP_SPEED
     grounded = false
     return true
@@ -822,6 +828,21 @@ function moveHorizontal(dx, dz, allowAutoJump = true) {
 function moveVertical(delta) {
     if (delta === 0) return
 
+    // Auto-jumps may rise at most one block above their takeoff height.
+    // Ordinary player jumps and swimming movement are not affected.
+    if (autoJumpActive && delta > 0) {
+        const maxFeetY = autoJumpStartFeet + AUTO_JUMP_HEIGHT
+        const remainingRise = maxFeetY - feetY
+        if (remainingRise <= EPS) {
+            verticalVelocity = 0
+            return
+        }
+        if (delta > remainingRise) {
+            delta = remainingRise
+            verticalVelocity = 0
+        }
+    }
+
     const steps = Math.max(1, Math.ceil(Math.abs(delta) / SUBSTEP))
     const step = delta / steps
     grounded = false
@@ -830,7 +851,10 @@ function moveVertical(delta) {
         if (canOccupy(playerX, playerZ, feetY + step)) {
             feetY += step
         } else {
-            if (step < 0) grounded = true
+            if (step < 0) {
+                grounded = true
+                autoJumpActive = false
+            }
             verticalVelocity = 0
             break
         }
@@ -1050,6 +1074,8 @@ function generate() {
 
     verticalVelocity = 0
     grounded = true
+    autoJumpActive = false
+    autoJumpStartFeet = feetY
     jumpQueued = false
     yaw = 0
     pitch = 0
