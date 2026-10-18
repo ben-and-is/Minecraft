@@ -93,7 +93,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🌍 Voxel World</strong>
-        <p>WASD to move · Mouse to look · Space to jump<br>Explore ponds, varied terrain, and forests.</p>
+        <p>WASD to move · Shift to run · Hold Space to jump<br>In water, look up/down and hold W to swim vertically.</p>
         <button id="g" type="button">Generate World</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -185,6 +185,10 @@ const MOVE_SPEED = 5.5
 const RUN_SPEED = 9.0
 const JUMP_SPEED = 8.0
 const GRAVITY = 22
+const WATER_GRAVITY = -5.5
+const WATER_DRAG = 1.8
+const SWIM_ACCELERATION = 18
+const MAX_SWIM_SPEED = 4.5
 const MAX_FALL_SPEED = 28
 const SUBSTEP = .12
 const EPS = .0001
@@ -755,17 +759,42 @@ function canOccupy(x, z, feet) {
     return !overlapsSolid(x, z, feet)
 }
 
-function moveHorizontal(dx, dz) {
+function tryAutoJump(tx, tz) {
+    if (!grounded) return false
+
+    // Only step onto a one-block-high solid surface. Two-block walls,
+    // overhangs, and obstacles with no clear space above are not auto-jumped.
+    const blockX = Math.floor(tx)
+    const blockZ = Math.floor(tz)
+    const obstacleY = Math.floor(feetY)
+
+    if (!isSolid(blockX, obstacleY, blockZ)) return false
+    if (isSolid(blockX, obstacleY + 1, blockZ)) return false
+    if (!canOccupy(tx, tz, feetY + 1)) return false
+
+    verticalVelocity = JUMP_SPEED
+    grounded = false
+    return true
+}
+
+function moveHorizontal(dx, dz, allowAutoJump = true) {
     const distance = Math.max(Math.abs(dx), Math.abs(dz))
     const steps = Math.max(1, Math.ceil(distance / SUBSTEP))
     const sx = dx / steps, sz = dz / steps
 
     for (let i = 0; i < steps; i++) {
-        if (canOccupy(playerX + sx, playerZ, feetY)) {
-            playerX += sx
+        const nextX = playerX + sx
+        if (canOccupy(nextX, playerZ, feetY)) {
+            playerX = nextX
+        } else if (allowAutoJump) {
+            tryAutoJump(nextX, playerZ)
         }
-        if (canOccupy(playerX, playerZ + sz, feetY)) {
-            playerZ += sz
+
+        const nextZ = playerZ + sz
+        if (canOccupy(playerX, nextZ, feetY)) {
+            playerZ = nextZ
+        } else if (allowAutoJump) {
+            tryAutoJump(playerX, nextZ)
         }
     }
 }
@@ -876,13 +905,15 @@ function updatePlayer(dt) {
     }
 
     const len = Math.hypot(mx, mz)
+    const wasInWater = getWaterSurface() !== null
+
     if (len > 0) {
         mx /= len
         mz /= len
         const speed = keys.has('ShiftLeft') || keys.has('ShiftRight')
             ? RUN_SPEED
             : MOVE_SPEED
-        moveHorizontal(mx * speed * dt, mz * speed * dt)
+        moveHorizontal(mx * speed * dt, mz * speed * dt, !wasInWater)
     }
 
     // Holding Space repeats jumps as soon as the player lands.
@@ -894,15 +925,26 @@ function updatePlayer(dt) {
 
     const waterSurface = getWaterSurface()
     if (waterSurface !== null) {
-        // A damped spring creates buoyancy without snapping to the waterline.
-        // The target leaves about 58% of the player's height below the surface.
-        const floatHeight = waterSurface - PLAYER_HEIGHT * 0.58
-        const buoyancy = (floatHeight - feetY) * 12 - verticalVelocity * 5
-        verticalVelocity = clamp(
-            verticalVelocity + buoyancy * dt,
-            -5.5,
-            4.5
-        )
+        // Negative gravity gently pulls the player upward, while drag prevents
+        // runaway acceleration. Look up + W to swim upward; look down + W to dive.
+        const forwardInput =
+            (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)
+        const swimVerticalInput = -Math.sin(pitch) * forwardInput
+
+        verticalVelocity -= WATER_GRAVITY * dt
+        verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
+        verticalVelocity *= Math.exp(-WATER_DRAG * dt)
+        verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
+
+        // Keep the head close to the waterline when floating upward, but allow
+        // deliberate downward swimming when the player looks below the horizon.
+        const floatFeet = waterSurface - PLAYER_HEIGHT + 0.12
+        if (feetY >= floatFeet && verticalVelocity > 0) {
+            verticalVelocity = 0
+        } else if (verticalVelocity > 0 && feetY + verticalVelocity * dt > floatFeet) {
+            verticalVelocity = (floatFeet - feetY) / dt
+        }
+
         moveVertical(verticalVelocity * dt)
     } else {
         verticalVelocity = Math.max(
