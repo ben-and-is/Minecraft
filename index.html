@@ -201,6 +201,8 @@ let yaw = 0
 let pitch = 0
 let mouseLocked = false
 let jumpQueued = false
+let autoStep = null
+const AUTO_STEP_DURATION = 0.18
 let previousTime = performance.now()
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
@@ -760,6 +762,50 @@ function canOccupy(x, z, feet) {
     return !overlapsSolid(x, z, feet)
 }
 
+function startAutoStep(targetX, targetZ) {
+    if (autoStep || !grounded || getWaterSurface() !== null) return false
+
+    const targetFeet = findGround(targetX, targetZ)
+    if (targetFeet <= feetY || targetFeet - feetY > 1.01) return false
+    if (!canOccupy(targetX, targetZ, targetFeet)) return false
+
+    autoStep = {
+        elapsed: 0,
+        startX: playerX,
+        startZ: playerZ,
+        startFeet: feetY,
+        targetX,
+        targetZ,
+        targetFeet
+    }
+    verticalVelocity = 0
+    grounded = false
+    return true
+}
+
+function advanceAutoStep(dt) {
+    if (!autoStep) return false
+
+    autoStep.elapsed = Math.min(autoStep.elapsed + dt, AUTO_STEP_DURATION)
+    const t = autoStep.elapsed / AUTO_STEP_DURATION
+    const eased = t * t * (3 - 2 * t)
+
+    playerX = autoStep.startX + (autoStep.targetX - autoStep.startX) * eased
+    playerZ = autoStep.startZ + (autoStep.targetZ - autoStep.startZ) * eased
+    feetY = autoStep.startFeet + (autoStep.targetFeet - autoStep.startFeet) * eased
+
+    if (t >= 1) {
+        feetY = autoStep.targetFeet
+        playerX = autoStep.targetX
+        playerZ = autoStep.targetZ
+        grounded = true
+        verticalVelocity = 0
+        autoStep = null
+    }
+
+    return true
+}
+
 function moveHorizontal(dx, dz) {
     const distance = Math.max(Math.abs(dx), Math.abs(dz))
     const steps = Math.max(1, Math.ceil(distance / SUBSTEP))
@@ -769,11 +815,17 @@ function moveHorizontal(dx, dz) {
         const nextX = playerX + sx
         if (canOccupy(nextX, playerZ, feetY)) {
             playerX = nextX
+        } else if (sx !== 0) {
+            const targetX = playerX + Math.sign(sx) * 0.65
+            if (startAutoStep(targetX, playerZ)) return
         }
 
         const nextZ = playerZ + sz
         if (canOccupy(playerX, nextZ, feetY)) {
             playerZ = nextZ
+        } else if (sz !== 0) {
+            const targetZ = playerZ + Math.sign(sz) * 0.65
+            if (startAutoStep(playerX, targetZ)) return
         }
     }
 }
@@ -858,6 +910,10 @@ function getWaterSurface() {
 
 function updatePlayer(dt) {
     dt = Math.min(dt, .05)
+    if (advanceAutoStep(dt)) {
+        syncCamera()
+        return
+    }
     const forward = new BABYLON.Vector3(
         Math.sin(yaw), 0, Math.cos(yaw)
     )
@@ -895,6 +951,10 @@ function updatePlayer(dt) {
             : MOVE_SPEED
         
         moveHorizontal(mx * speed * dt, mz * speed * dt)
+        if (autoStep) {
+            syncCamera()
+            return
+        }
     }
 
     const waterSurface = getWaterSurface()
@@ -1011,6 +1071,7 @@ function generate() {
     verticalVelocity = 0
     grounded = true
     jumpQueued = false
+    autoStep = null
     yaw = 0
     pitch = 0
     syncCamera()
