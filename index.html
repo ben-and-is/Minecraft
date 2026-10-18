@@ -762,14 +762,33 @@ function canOccupy(x, z, feet) {
 function tryAutoJump(tx, tz) {
     if (!grounded) return false
 
-    // Only step onto a one-block-high solid surface. Two-block walls,
-    // overhangs, and obstacles with no clear space above are not auto-jumped.
-    const blockX = Math.floor(tx)
-    const blockZ = Math.floor(tz)
+    // Look for a one-block obstacle newly entering the player's collision
+    // footprint. This catches the block at the edge before the player's center
+    // crosses into its grid cell, and excludes tall walls/overhangs.
     const obstacleY = Math.floor(feetY)
+    const minX = Math.floor(tx - PLAYER_RADIUS + EPS)
+    const maxX = Math.floor(tx + PLAYER_RADIUS - EPS)
+    const minZ = Math.floor(tz - PLAYER_RADIUS + EPS)
+    const maxZ = Math.floor(tz + PLAYER_RADIUS - EPS)
+    const oldMinX = Math.floor(playerX - PLAYER_RADIUS + EPS)
+    const oldMaxX = Math.floor(playerX + PLAYER_RADIUS - EPS)
+    const oldMinZ = Math.floor(playerZ - PLAYER_RADIUS + EPS)
+    const oldMaxZ = Math.floor(playerZ + PLAYER_RADIUS - EPS)
 
-    if (!isSolid(blockX, obstacleY, blockZ)) return false
-    if (isSolid(blockX, obstacleY + 1, blockZ)) return false
+    let hasNewOneBlockObstacle = false
+    for (let bx = minX; bx <= maxX; bx++) {
+        for (let bz = minZ; bz <= maxZ; bz++) {
+            const wasAlreadyOverlapping =
+                bx >= oldMinX && bx <= oldMaxX &&
+                bz >= oldMinZ && bz <= oldMaxZ
+            if (wasAlreadyOverlapping) continue
+            if (!isSolid(bx, obstacleY, bz)) continue
+            if (!isSolid(bx, obstacleY - 1, bz)) continue
+            hasNewOneBlockObstacle = true
+        }
+    }
+
+    if (!hasNewOneBlockObstacle) return false
     if (!canOccupy(tx, tz, feetY + 1)) return false
 
     verticalVelocity = JUMP_SPEED
