@@ -198,8 +198,6 @@ const EPS = .0001
 let feetY = 10
 let verticalVelocity = 0
 let grounded = false
-let autoJumpActive = false
-let autoJumpStartFeet = 0
 let yaw = 0
 let pitch = 0
 let mouseLocked = false
@@ -793,13 +791,14 @@ function tryAutoJump(tx, tz) {
     }
 
     if (!hasNewOneBlockObstacle) return false
-    if (!canOccupy(tx, tz, feetY + AUTO_JUMP_HEIGHT)) return false
 
-    // Step straight onto the one-block surface instead of launching into an arc.
-    feetY += AUTO_JUMP_HEIGHT
+    const targetFeet = feetY + AUTO_JUMP_HEIGHT
+    if (!canOccupy(tx, tz, targetFeet)) return false
+
+    playerX = tx
+    playerZ = tz
+    feetY = targetFeet
     verticalVelocity = 0
-    autoJumpActive = false
-    autoJumpStartFeet = feetY
     grounded = true
     return true
 }
@@ -828,21 +827,6 @@ function moveHorizontal(dx, dz, allowAutoJump = true) {
 
 function moveVertical(delta) {
     if (delta === 0) return
-
-    // Auto-jumps may rise at most one block above their takeoff height.
-    // Ordinary player jumps and swimming movement are not affected.
-    if (autoJumpActive && delta > 0) {
-        const maxFeetY = autoJumpStartFeet + AUTO_JUMP_HEIGHT
-        const remainingRise = maxFeetY - feetY
-        if (remainingRise <= EPS) {
-            verticalVelocity = 0
-            return
-        }
-        if (delta > remainingRise) {
-            delta = remainingRise
-            verticalVelocity = 0
-        }
-    }
 
     const steps = Math.max(1, Math.ceil(Math.abs(delta) / SUBSTEP))
     const step = delta / steps
@@ -1075,8 +1059,6 @@ function generate() {
 
     verticalVelocity = 0
     grounded = true
-    autoJumpActive = false
-    autoJumpStartFeet = feetY
     jumpQueued = false
     yaw = 0
     pitch = 0
