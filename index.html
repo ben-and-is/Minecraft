@@ -816,17 +816,21 @@ function moveHorizontal(dx, dz) {
         const nextX = playerX + sx
         if (canOccupy(nextX, playerZ, feetY)) {
             playerX = nextX
-        } else if (sx !== 0) {
-            const targetX = playerX + Math.sign(sx) * 0.65
-            if (startAutoStep(targetX, playerZ)) return
+        } else if (sx !== 0 || sz !== 0) {
+            const directionLength = Math.hypot(dx, dz) || 1
+            const targetX = playerX + dx / directionLength * 0.65
+            const targetZ = playerZ + dz / directionLength * 0.65
+            if (startAutoStep(targetX, targetZ)) return
         }
 
         const nextZ = playerZ + sz
         if (canOccupy(playerX, nextZ, feetY)) {
             playerZ = nextZ
-        } else if (sz !== 0) {
-            const targetZ = playerZ + Math.sign(sz) * 0.65
-            if (startAutoStep(playerX, targetZ)) return
+        } else if (sx !== 0 || sz !== 0) {
+            const directionLength = Math.hypot(dx, dz) || 1
+            const targetX = playerX + dx / directionLength * 0.65
+            const targetZ = playerZ + dz / directionLength * 0.65
+            if (startAutoStep(targetX, targetZ)) return
         }
     }
 }
@@ -982,20 +986,13 @@ function updatePlayer(dt) {
             (keys.has('Space') ? 1.0 : 0) -
             (keys.has('ControlLeft') || keys.has('ControlRight') ? 1.0 : 0)
 
-        if (Math.abs(swimVerticalInput) > 0.015) {
-            
-            
-            verticalVelocity -= WATER_GRAVITY * dt
-            verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
-        } else {
-            
-            
-            const speedRatio = horizontalSpeed / MAX_WATER_HORIZONTAL_SPEED
-            const floatFeet = waterSurface - EYE_HEIGHT + 0.05 +
-                WATER_GRAVITY / WATER_BUOYANCY - speedRatio * 1.1
-            verticalVelocity -= WATER_GRAVITY * dt
-            verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
-        }
+        const speedRatio = clamp(horizontalSpeed / MAX_WATER_HORIZONTAL_SPEED, 0, 1)
+        const floatFeet = waterSurface - EYE_HEIGHT + 0.05 +
+            WATER_GRAVITY / WATER_BUOYANCY - speedRatio * 1.1
+
+        verticalVelocity -= WATER_GRAVITY * dt
+        verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
+        verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
 
         
         
