@@ -148,7 +148,7 @@ const materials = colors.map((color, i) => {
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES) {
-        
+
         m.useVertexColors = true
         m.useVertexAlpha = true
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
@@ -191,6 +191,9 @@ const WATER_DRAG = 3.0
 const SWIM_ACCELERATION = 24
 const MAX_SWIM_SPEED = 5.0
 const MAX_WATER_HORIZONTAL_SPEED = 4.5
+const WATER_MOVE_SPEED = 3.0
+const WATER_DIVE_START_SPEED = 2.0
+const MAX_WATER_DIVE_DEPTH = 1.25
 const MAX_FALL_SPEED = 28
 const SUBSTEP = .12
 const EPS = .0001
@@ -278,8 +281,6 @@ function createPonds() {
             Math.hypot((x - q.x) / (rx + q.rx + 4), (z - q.z) / (rz + q.rz + 4)) < 1
         )) continue
 
-        
-        
         let lowestRim = H
         for (let a = 0; a < 32; a++) {
             const angle = a / 32 * Math.PI * 2
@@ -302,8 +303,6 @@ function createPonds() {
                 const dz = (z - p.z) / p.rz
                 const d = Math.sqrt(dx * dx + dz * dz)
 
-                
-                
                 const broadWobble = (noise(x * .37 + p.x, z * .37 + p.z) - .5) * .44
                 const fineWobble = (noise(x * .83 + p.z, z * .83 + p.x) - .5) * .16
                 const edge = d + broadWobble + fineWobble
@@ -314,8 +313,7 @@ function createPonds() {
                 const originalHeight = heights[col]
 
                 if (edge <= 1) {
-                    
-                    
+
                     const depth = 1 + Math.floor(
                         Math.max(0, 1 - edge) * 3 +
                         (noise(x * .7 + seed, z * .7 - seed) - .5) * .3
@@ -326,9 +324,7 @@ function createPonds() {
                     )
                     waterLevels[col] = p.level
                 } else if (originalHeight > p.level) {
-                    
-                    
-                    
+
                     const t = clamp((edge - 1) / .48, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const bankHeight = Math.round(
@@ -412,7 +408,6 @@ function addTrees() {
     }
 }
 
-
 function addGroundDecorations() {
     const grassBuffer = { p: [], n: [], c: [], i: [] }
     const flowerBuffer = { p: [], n: [], c: [], i: [] }
@@ -422,7 +417,7 @@ function addGroundDecorations() {
         [0.19, 0.43, 0.10], [0.28, 0.55, 0.14],
         [0.35, 0.58, 0.18], [0.23, 0.49, 0.12]
     ]
-    
+
     const flowerPalette = [
         [1, 0, 0], [0, 1, 0], [0, 0, 1]
     ]
@@ -512,8 +507,7 @@ function addGroundDecorations() {
             const sideZ = Math.cos(angle) * 0.022 * scale
             const lean = 0.025 + rand(x + b * 23, z + b * 29) * 0.045
             const height = (0.16 + rand(x + b * 37, z + b * 41) * 0.14) * scale
-            
-            
+
             const spreadX = (rand(x * 17 + b * 43, z * 19 + b * 47) - 0.5) * 0.72
             const spreadZ = (rand(x * 23 + b * 53, z * 29 + b * 59) - 0.5) * 0.72
             const bx = x + spreadX
@@ -531,12 +525,11 @@ function addGroundDecorations() {
 
     function flower(x, y, z, variant, scale) {
         const petalColor = flowerPalette[variant % flowerPalette.length]
-        
+
         const stemHeight = (0.10 + rand(x + 57, z + 61) * 0.05) * scale
         const headY = y + stemHeight
         cylinder(flowerBuffer, x, z, y + 0.01, headY, 0.006 * scale, 0.0045 * scale, stemGreen, 5)
 
-        
         ellipsoid(
             flowerBuffer, x + 0.027 * scale, y + stemHeight * 0.48,
             z + 0.004 * scale, 0.034 * scale, 0.009 * scale, 0.016 * scale,
@@ -551,7 +544,7 @@ function addGroundDecorations() {
         const petalCount = 5
         for (let p = 0; p < petalCount; p++) {
             const angle = p * Math.PI * 2 / petalCount
-            
+
             const px = x + Math.cos(angle) * 0.054 * scale
             const pz = z + Math.sin(angle) * 0.054 * scale
             ellipsoid(
@@ -584,7 +577,6 @@ function addGroundDecorations() {
             0, capColor, 8, 4
         )
 
-        
         if (variant % 2 === 0) {
             for (let spot = 0; spot < 4; spot++) {
                 const angle = spot * Math.PI * 0.5 + 0.35
@@ -607,8 +599,6 @@ function addGroundDecorations() {
             const groundY = heights[col]
             if (get(x, groundY, z) !== GRASS || get(x, groundY + 1, z) !== EMPTY) continue
 
-            
-            
             const roll = rand(x + 307, z + 811)
             const px = x + 0.5 + (rand(x + 97, z + 131) - 0.5) * 0.36
             const pz = z + 0.5 + (rand(x + 139, z + 173) - 0.5) * 0.36
@@ -672,8 +662,6 @@ function buildChunk(cx, cz) {
                 const type = get(x, y, z)
                 if (type === EMPTY) continue
 
-                
-                
                 const leafOpacity = type === LEAVES
                     ? 0.85 + rand(x + y * 37, z + y * 61) * 0.10
                     : 1
@@ -892,8 +880,6 @@ function syncCamera() {
     camera.rotation.set(pitch, yaw, 0)
 }
 
-
-
 function getWaterSurface() {
     const offsets = [
         [0, 0],
@@ -966,25 +952,29 @@ function updatePlayer(dt) {
     if (len > 0) {
         mx /= len
         mz /= len
-        const requestedSpeed = keys.has('ShiftLeft') || keys.has('ShiftRight')
-            ? RUN_SPEED
-            : MOVE_SPEED
-        horizontalSpeed = waterBeforeMove
-            ? Math.min(requestedSpeed, MAX_WATER_HORIZONTAL_SPEED)
+        const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
+        const requestedSpeed = running ? RUN_SPEED : MOVE_SPEED
+        const movementSpeed = waterBeforeMove
+            ? (running ? MAX_WATER_HORIZONTAL_SPEED : WATER_MOVE_SPEED)
             : requestedSpeed
+        const previousX = playerX
+        const previousZ = playerZ
 
-        moveHorizontal(mx * horizontalSpeed * dt, mz * horizontalSpeed * dt)
+        moveHorizontal(mx * movementSpeed * dt, mz * movementSpeed * dt)
         if (autoStep) {
             syncCamera()
             return
         }
+
+        horizontalSpeed = Math.hypot(
+            playerX - previousX,
+            playerZ - previousZ
+        ) / Math.max(dt, EPS)
     }
 
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
 
-    
-    
     if (!inWater && (keys.has('Space') || jumpQueued) && grounded) {
         verticalVelocity = JUMP_SPEED
         grounded = false
@@ -1000,22 +990,25 @@ function updatePlayer(dt) {
             (keys.has('Space') ? 1.0 : 0) -
             (keys.has('ControlLeft') || keys.has('ControlRight') ? 1.0 : 0)
 
-        const speedRatio = clamp(horizontalSpeed / MAX_WATER_HORIZONTAL_SPEED, 0, 1)
+        const diveRatio = clamp(
+            (horizontalSpeed - WATER_DIVE_START_SPEED) /
+            (MAX_WATER_HORIZONTAL_SPEED - WATER_DIVE_START_SPEED),
+            0, 1
+        )
+        const diveDepth = diveRatio * MAX_WATER_DIVE_DEPTH
         const floatFeet = waterSurface - EYE_HEIGHT + 0.05 +
-            WATER_GRAVITY / WATER_BUOYANCY - speedRatio * 1.1
+            WATER_GRAVITY / WATER_BUOYANCY - diveDepth
 
         verticalVelocity -= WATER_GRAVITY * dt
         verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
         verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
 
-        
-        
         verticalVelocity *= Math.exp(-WATER_DRAG * dt)
         verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
 
         moveVertical(verticalVelocity * dt)
     } else {
-        
+
         verticalVelocity = Math.max(
             -MAX_FALL_SPEED,
             verticalVelocity - GRAVITY * dt
