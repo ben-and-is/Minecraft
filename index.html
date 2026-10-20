@@ -93,7 +93,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🌍 Voxel World</strong>
-        <p>WASD to move · Shift to run · Hold Space to jump/swim up<br>In water, look up/down + W to swim; hold Ctrl to dive.</p>
+        <p>WASD to move · Shift to run · Hold Space to jump/swim up<br>In water, look up/down + W to swim; hold Ctrl to dive.<br>Explore mountains, deep oceans, ponds and flat plains.</p>
         <button id="g" type="button">Generate World</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -111,7 +111,7 @@ const scene = new BABYLON.Scene(engine)
 scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
 scene.collisionsEnabled = false
 
-const N = 72, H = 32, CS = 16, YOFF = -5
+const N = 64, H = 48, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5
 const MCOUNT = 6
 
@@ -176,6 +176,9 @@ const waterLevels = new Int8Array(N * N)
 let meshes = []
 let seed = 1
 let ponds = []
+let oceans = []
+let mountains = []
+let plains = []
 let keys = new Set()
 
 const PLAYER_RADIUS = .30
@@ -243,6 +246,60 @@ function noise(x, z) {
     return (a + (b - a) * u) * (1 - v) + (c + (d - c) * u) * v
 }
 
+function createWorldFeatures() {
+    oceans = [{
+        x: N * 0.24 + (rand(601, 607) - 0.5) * 3,
+        z: N * 0.25 + (rand(613, 619) - 0.5) * 3,
+        rx: 10.5 + rand(617, 631) * 1.2,
+        rz: 9.5 + rand(641, 647) * 1.2,
+        level: 8
+    }]
+
+    mountains = [{
+        x: N * 0.72 + (rand(653, 659) - 0.5) * 3,
+        z: N * 0.27 + (rand(661, 673) - 0.5) * 3,
+        rx: 8.2,
+        rz: 9.0,
+        peak: 24
+    }]
+
+    plains = [{
+        x: N * 0.25 + (rand(677, 683) - 0.5) * 3,
+        z: N * 0.72 + (rand(691, 701) - 0.5) * 3,
+        rx: 13,
+        rz: 11
+    }]
+}
+
+function plainsInfluence(x, z) {
+    let influence = 0
+
+    for (const p of plains) {
+        const dx = (x - p.x) / p.rx
+        const dz = (z - p.z) / p.rz
+        const distance = Math.sqrt(dx * dx + dz * dz)
+        const edge = clamp((1.28 - distance) / 0.48, 0, 1)
+        const smooth = edge * edge * (3 - 2 * edge)
+        influence = Math.max(influence, smooth)
+    }
+
+    return influence
+}
+
+function mountainRiseAt(x, z) {
+    let rise = 0
+
+    for (const m of mountains) {
+        const dx = (x - m.x) / m.rx
+        const dz = (z - m.z) / m.rz
+        const distance = Math.sqrt(dx * dx + dz * dz)
+        const weight = clamp(1 - distance / 1.2, 0, 1)
+        rise = Math.max(rise, Math.pow(weight, 0.78) * m.peak)
+    }
+
+    return rise
+}
+
 function terrainHeight(x, z) {
     const hills =
         5 +
@@ -250,7 +307,19 @@ function terrainHeight(x, z) {
         Math.cos(z * .25 + seed * .7) * 2 +
         Math.sin((x + z) * .13) * 1.5
 
-    return clamp(Math.floor(hills) + 5, 5, H - 8)
+    let height = Math.floor(hills) + 5
+    const flatness = plainsInfluence(x, z)
+
+    if (flatness > 0) {
+        const plainHeight = 10 + Math.round(
+            Math.sin(x * 0.14 + seed * 0.1) * 0.55 +
+            Math.cos(z * 0.14 + seed * 0.2) * 0.55
+        )
+        height = height * (1 - flatness) + plainHeight * flatness
+    }
+
+    height += mountainRiseAt(x, z)
+    return clamp(Math.round(height), 5, H - 8)
 }
 
 function createHeightMap() {
@@ -261,24 +330,64 @@ function createHeightMap() {
     }
 }
 
-function createPonds() {
-    ponds = []
+function createOceans() {
     waterLevels.fill(EMPTY)
 
-    const count = 1 + Math.floor(rand(713, 921) * 3)
+    for (const ocean of oceans) {
+        const x0 = Math.max(1, Math.floor(ocean.x - ocean.rx * 1.5))
+        const x1 = Math.min(N - 2, Math.ceil(ocean.x + ocean.rx * 1.5))
+        const z0 = Math.max(1, Math.floor(ocean.z - ocean.rz * 1.5))
+        const z1 = Math.min(N - 2, Math.ceil(ocean.z + ocean.rz * 1.5))
+
+        for (let x = x0; x <= x1; x++) {
+            for (let z = z0; z <= z1; z++) {
+                const dx = (x - ocean.x) / ocean.rx
+                const dz = (z - ocean.z) / ocean.rz
+                const distance = Math.sqrt(dx * dx + dz * dz)
+                const broadWobble = (noise(x * 0.31 + ocean.x, z * 0.31 + ocean.z) - 0.5) * 0.28
+                const fineWobble = (noise(x * 0.73 + ocean.z, z * 0.73 + ocean.x) - 0.5) * 0.12
+                const edge = distance + broadWobble + fineWobble
+
+                if (edge > 1.45) continue
+
+                const col = ci(x, z)
+                const originalHeight = heights[col]
+
+                if (edge <= 1) {
+                    const depth = 3 + Math.floor(
+                        Math.max(0, 1 - edge) * 8 +
+                        (noise(x * 0.67 + seed, z * 0.67 - seed) - 0.5) * 0.7
+                    )
+                    heights[col] = Math.min(originalHeight, Math.max(2, ocean.level - depth))
+                    waterLevels[col] = ocean.level
+                } else if (originalHeight > ocean.level) {
+                    const t = clamp((edge - 1) / 0.45, 0, 1)
+                    const smooth = t * t * (3 - 2 * t)
+                    const bankHeight = Math.round(
+                        ocean.level + (originalHeight - ocean.level) * smooth
+                    )
+                    heights[col] = Math.min(originalHeight, bankHeight)
+                }
+            }
+        }
+    }
+}
+
+function createPonds() {
+    ponds = []
+    const count = 1 + Math.floor(rand(713, 921) * 2)
     let tries = 0
 
-    while (ponds.length < count && tries < 500) {
+    while (ponds.length < count && tries < 200) {
         const k = tries++
-        const rx = 3 + rand(k * 41 + 7, k * 59 + 13) * 6
-        const rz = 3 + rand(k * 23 + 31, k * 17 + 17) * 5
-        const x = 10 + Math.floor(rand(k * 29 + 53, k * 11 + 29) * (N - 20))
-        const z = 10 + Math.floor(rand(k * 19 + 53, k * 11 + 29) * (N - 20))
-
+        const x = N * 0.72 + (rand(k * 29 + 53, k * 11 + 29) - 0.5) * 7
+        const z = N * 0.72 + (rand(k * 19 + 53, k * 11 + 29) - 0.5) * 7
+        const rx = 3.2 + rand(k * 41 + 7, k * 59 + 13) * 2.2
+        const rz = 3.0 + rand(k * 23 + 31, k * 17 + 17) * 2.0
         const p = { x, z, rx, rz, level: 0 }
 
         if (ponds.some(q =>
-            Math.hypot((x - q.x) / (rx + q.rx + 4), (z - q.z) / (rz + q.rz + 4)) < 1
+            Math.hypot((x - q.x) / (rx + q.rx + 3), (z - q.z) / (rz + q.rz + 3)) < 1
         )) continue
 
         let lowestRim = H
@@ -291,21 +400,25 @@ function createPonds() {
         p.level = clamp(
             lowestRim - 1 - Math.floor(rand(x + 101, z + 137) * 2),
             4,
-            H - 8
+            H - 10
         )
         ponds.push(p)
     }
 
     for (const p of ponds) {
-        for (let x = 1; x < N - 1; x++) {
-            for (let z = 1; z < N - 1; z++) {
+        const x0 = Math.max(1, Math.floor(p.x - p.rx * 1.55))
+        const x1 = Math.min(N - 2, Math.ceil(p.x + p.rx * 1.55))
+        const z0 = Math.max(1, Math.floor(p.z - p.rz * 1.55))
+        const z1 = Math.min(N - 2, Math.ceil(p.z + p.rz * 1.55))
+
+        for (let x = x0; x <= x1; x++) {
+            for (let z = z0; z <= z1; z++) {
                 const dx = (x - p.x) / p.rx
                 const dz = (z - p.z) / p.rz
-                const d = Math.sqrt(dx * dx + dz * dz)
-
-                const broadWobble = (noise(x * .37 + p.x, z * .37 + p.z) - .5) * .44
-                const fineWobble = (noise(x * .83 + p.z, z * .83 + p.x) - .5) * .16
-                const edge = d + broadWobble + fineWobble
+                const distance = Math.sqrt(dx * dx + dz * dz)
+                const broadWobble = (noise(x * 0.37 + p.x, z * 0.37 + p.z) - 0.5) * 0.44
+                const fineWobble = (noise(x * 0.83 + p.z, z * 0.83 + p.x) - 0.5) * 0.16
+                const edge = distance + broadWobble + fineWobble
 
                 if (edge > 1.48) continue
 
@@ -313,19 +426,14 @@ function createPonds() {
                 const originalHeight = heights[col]
 
                 if (edge <= 1) {
-
                     const depth = 1 + Math.floor(
                         Math.max(0, 1 - edge) * 3 +
-                        (noise(x * .7 + seed, z * .7 - seed) - .5) * .3
+                        (noise(x * 0.7 + seed, z * 0.7 - seed) - 0.5) * 0.3
                     )
-                    heights[col] = Math.min(
-                        originalHeight,
-                        Math.max(2, p.level - depth)
-                    )
+                    heights[col] = Math.min(originalHeight, Math.max(2, p.level - depth))
                     waterLevels[col] = p.level
                 } else if (originalHeight > p.level) {
-
-                    const t = clamp((edge - 1) / .48, 0, 1)
+                    const t = clamp((edge - 1) / 0.48, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const bankHeight = Math.round(
                         p.level + (originalHeight - p.level) * smooth
@@ -347,7 +455,7 @@ function voxelize() {
 
             for (let y = 0; y <= h; y++) {
                 set(x, y, z,
-                    y === h ? (wet ? DIRT : GRASS) :
+                    y === h ? (wet ? DIRT : (mountainRiseAt(x, z) >= 5 ? STONE : GRASS)) :
                     y >= h - 3 ? DIRT : STONE
                 )
             }
@@ -369,9 +477,14 @@ function voxelize() {
 function addTrees() {
     for (let x = 2; x < N - 2; x++) {
         for (let z = 2; z < N - 2; z++) {
-            if (waterLevels[ci(x, z)] !== EMPTY || rand(x, z) <= .986) continue
+            const col = ci(x, z)
+            if (waterLevels[col] !== EMPTY) continue
 
-            const h = heights[ci(x, z)]
+            const h = heights[col]
+            if (get(x, h, z) !== GRASS) continue
+            const treeThreshold = 0.986 + plainsInfluence(x, z) * 0.012
+            if (rand(x, z) <= treeThreshold) continue
+
             const trunk = 3 + Math.floor(rand(x + 47, z + 31) * 2)
             const top = h + trunk
 
@@ -600,17 +713,21 @@ function addGroundDecorations() {
             if (get(x, groundY, z) !== GRASS || get(x, groundY + 1, z) !== EMPTY) continue
 
             const roll = rand(x + 307, z + 811)
+            const flatness = plainsInfluence(x, z)
+            const grassLimit = 0.20 * (1 - flatness * 0.82)
+            const flowerLimit = grassLimit + 0.035 * (1 - flatness * 0.80)
+            const mushroomLimit = flowerLimit + 0.008 * (1 - flatness * 0.65)
             const px = x + 0.5 + (rand(x + 97, z + 131) - 0.5) * 0.36
             const pz = z + 0.5 + (rand(x + 139, z + 173) - 0.5) * 0.36
             const py = groundY + 1
 
-            if (roll < 0.20) {
+            if (roll < grassLimit) {
                 tuft(px, py, pz, Math.floor(rand(x + 181, z + 199) * greenPalette.length),
                     2 * (0.75 + rand(x + 211, z + 223) * 0.55))
-            } else if (roll < 0.235) {
+            } else if (roll < flowerLimit) {
                 flower(px, py, pz, Math.floor(rand(x + 227, z + 239) * flowerPalette.length),
                     3 * (0.78 + rand(x + 241, z + 251) * 0.42))
-            } else if (roll < 0.243) {
+            } else if (roll < mushroomLimit) {
                 mushroom(px, py, pz, Math.floor(rand(x + 257, z + 263) * 2),
                     3 * (0.78 + rand(x + 269, z + 277) * 0.40))
             }
@@ -656,7 +773,17 @@ function buildChunk(cx, cz) {
     const x0 = cx * CS, z0 = cz * CS
     const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
 
-    for (let y = 0; y < H; y++) {
+    let maxY = 0
+    for (let z = z0; z < z1; z++) {
+        for (let x = x0; x < x1; x++) {
+            const col = ci(x, z)
+            maxY = Math.max(maxY, heights[col] + 6)
+            if (waterLevels[col] !== EMPTY) maxY = Math.max(maxY, waterLevels[col])
+        }
+    }
+    maxY = Math.min(H - 1, maxY)
+
+    for (let y = 0; y <= maxY; y++) {
         for (let z = z0; z < z1; z++) {
             for (let x = x0; x < x1; x++) {
                 const type = get(x, y, z)
@@ -1038,7 +1165,9 @@ function generate() {
     voxels.fill(EMPTY)
     waterLevels.fill(EMPTY)
 
+    createWorldFeatures()
     createHeightMap()
+    createOceans()
     createPonds()
     voxelize()
     addTrees()
