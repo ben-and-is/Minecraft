@@ -764,7 +764,9 @@ function canOccupy(x, z, feet) {
 }
 
 function startAutoStep(targetX, targetZ) {
-    if (autoStep || !grounded || getWaterSurface() !== null) return false
+    const supported = grounded ||
+        (verticalVelocity <= 0 && !canOccupy(playerX, playerZ, feetY - 0.06))
+    if (autoStep || !supported || verticalVelocity > 0 || getWaterSurface() !== null) return false
 
     const targetFeet = findGround(targetX, targetZ)
     if (targetFeet <= feetY || targetFeet - feetY > 1.01) return false
@@ -782,6 +784,24 @@ function startAutoStep(targetX, targetZ) {
     verticalVelocity = 0
     grounded = false
     return true
+}
+
+function tryAutoStepInDirection(dx, dz) {
+    const length = Math.hypot(dx, dz)
+    if (length < EPS) return false
+
+    const dirX = dx / length
+    const dirZ = dz / length
+
+    // Try progressively farther landing points. The nearest one can still
+    // overlap the block on diagonal approaches or near voxel corners.
+    for (const distance of [0.65, 0.8, 0.95, 1.1, 1.25]) {
+        const targetX = playerX + dirX * distance
+        const targetZ = playerZ + dirZ * distance
+        if (startAutoStep(targetX, targetZ)) return true
+    }
+
+    return false
 }
 
 function advanceAutoStep(dt) {
@@ -816,21 +836,15 @@ function moveHorizontal(dx, dz) {
         const nextX = playerX + sx
         if (canOccupy(nextX, playerZ, feetY)) {
             playerX = nextX
-        } else if (sx !== 0 || sz !== 0) {
-            const directionLength = Math.hypot(dx, dz) || 1
-            const targetX = playerX + dx / directionLength * 0.65
-            const targetZ = playerZ + dz / directionLength * 0.65
-            if (startAutoStep(targetX, targetZ)) return
+        } else if ((sx !== 0 || sz !== 0) && tryAutoStepInDirection(dx, dz)) {
+            return
         }
 
         const nextZ = playerZ + sz
         if (canOccupy(playerX, nextZ, feetY)) {
             playerZ = nextZ
-        } else if (sx !== 0 || sz !== 0) {
-            const directionLength = Math.hypot(dx, dz) || 1
-            const targetX = playerX + dx / directionLength * 0.65
-            const targetZ = playerZ + dz / directionLength * 0.65
-            if (startAutoStep(targetX, targetZ)) return
+        } else if ((sx !== 0 || sz !== 0) && tryAutoStepInDirection(dx, dz)) {
+            return
         }
     }
 }
