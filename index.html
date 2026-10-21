@@ -148,11 +148,12 @@ const materials = colors.map((color, i) => {
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES) {
-
+        // Keep leaves opaque so alpha blending does not make foliage look
+        // like X-ray geometry when rendered through the transparent water.
         m.useVertexColors = true
-        m.useVertexAlpha = true
-        m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
-        m.needDepthPrePass = true
+        m.useVertexAlpha = false
+        m.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE
+        m.needDepthPrePass = false
     } else {
         m.freeze()
     }
@@ -796,10 +797,6 @@ function buildChunk(cx, cz) {
                 const type = get(x, y, z)
                 if (type === EMPTY) continue
 
-                const leafOpacity = type === LEAVES
-                    ? 0.85 + rand(x + y * 37, z + y * 61) * 0.10
-                    : 1
-
                 for (const f of faces) {
                     const neighbor = get(
                         x + f.d[0], y + f.d[1], z + f.d[2]
@@ -817,7 +814,9 @@ function buildChunk(cx, cz) {
                         g.n.push(...f.d)
                         g.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
                         if (type === LEAVES) {
-                            g.c.push(1, 1, 1, leafOpacity)
+                            // Alpha is intentionally fully opaque; underwater
+                            // foliage must not blend through water or itself.
+                            g.c.push(1, 1, 1, 1)
                         }
                     }
 
@@ -886,12 +885,17 @@ function canOccupy(x, z, feet) {
 }
 
 function startAutoStep(targetX, targetZ) {
-    const supported = grounded ||
+    const waterSurface = getWaterSurface()
+    const inWater = waterSurface !== null
+    // Water supports an assisted climb even when the player is buoyant rather
+    // than grounded. Allow one block above the waterline when exiting.
+    const supported = inWater || grounded ||
         (verticalVelocity <= 0 && !canOccupy(playerX, playerZ, feetY - 0.06))
-    if (autoStep || !supported || verticalVelocity > 0 || getWaterSurface() !== null) return false
+    if (autoStep || !supported || (!inWater && verticalVelocity > 0)) return false
 
     const targetFeet = findGround(targetX, targetZ)
-    if (targetFeet <= feetY || targetFeet - feetY > 1.01) return false
+    const highestAllowedFeet = inWater ? waterSurface + 1.01 : feetY + 1.01
+    if (targetFeet <= feetY || targetFeet > highestAllowedFeet + EPS) return false
     if (!canOccupy(targetX, targetZ, targetFeet)) return false
 
     autoStep = {
