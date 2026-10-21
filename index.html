@@ -255,12 +255,13 @@ function createWorldFeatures() {
         level: 8
     }]
 
-    mountains = [{
+    // Most worlds keep a mountain, but occasionally generate a quieter landscape.
+    mountains = rand(653, 659) < 0.16 ? [] : [{
         x: N * 0.72 + (rand(653, 659) - 0.5) * 3,
         z: N * 0.27 + (rand(661, 673) - 0.5) * 3,
-        rx: 8.2,
-        rz: 9.0,
-        peak: 24
+        rx: 10.0,
+        rz: 10.8,
+        peak: 30
     }]
 
     plains = [{
@@ -360,13 +361,19 @@ function createOceans() {
                     )
                     heights[col] = Math.min(originalHeight, Math.max(2, ocean.level - depth))
                     waterLevels[col] = ocean.level
-                } else if (originalHeight > ocean.level) {
+                } else {
+                    // Build a continuous raised shoreline outside the water mask.
+                    // This prevents low neighboring terrain from looking like ocean overflow.
                     const t = clamp((edge - 1) / 0.45, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const bankHeight = Math.round(
-                        ocean.level + (originalHeight - ocean.level) * smooth
+                        (ocean.level + 1) +
+                        (Math.max(originalHeight, ocean.level + 1) - (ocean.level + 1)) * smooth
                     )
-                    heights[col] = Math.min(originalHeight, bankHeight)
+                    heights[col] = Math.max(
+                        heights[col],
+                        Math.min(Math.max(originalHeight, ocean.level + 1), bankHeight)
+                    )
                 }
             }
         }
@@ -455,7 +462,7 @@ function voxelize() {
 
             for (let y = 0; y <= h; y++) {
                 set(x, y, z,
-                    y === h ? (wet ? DIRT : (mountainRiseAt(x, z) >= 5 ? STONE : GRASS)) :
+                    y === h ? (wet ? DIRT : (mountainRiseAt(x, z) >= 10 ? STONE : GRASS)) :
                     y >= h - 3 ? DIRT : STONE
                 )
             }
