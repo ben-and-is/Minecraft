@@ -253,7 +253,7 @@ function noise(x, z) {
 function createWorldFeatures() {
     oceans = [{ name: 'Ocean', level: 8 }]
 
-    // A 16x16 chunk archipelago: broad islands with irregular shelves and coastlines.
+    // Mountains are rare world-generation events. Most seeds have none.
     islands = [
         { name: 'Main Island', x: N * 0.58, z: N * 0.36, rx: 60, rz: 57, peak: 22, warp: 17, edgeScale: 0.85 },
         { name: 'Southwest Island', x: N * 0.34, z: N * 0.70, rx: 58, rz: 48, peak: 20, warp: 13, edgeScale: 0.70 },
@@ -265,15 +265,13 @@ function createWorldFeatures() {
 
     ponds = [
         {
-            name: 'Small Pond',
-            kind: 'small',
+            name: 'Small Pond', kind: 'small',
             x: N * 0.57, z: N * 0.47,
             rx: 6, rz: 5, warp: 2.8,
             connected: false, level: 7
         },
         {
-            name: 'Medium Lake',
-            kind: 'medium',
+            name: 'Medium Lake', kind: 'medium',
             x: N * 0.40, z: N * 0.50,
             rx: 13.5, rz: 12, warp: 5.5,
             connected: true, level: 8,
@@ -285,8 +283,7 @@ function createWorldFeatures() {
             ]
         },
         {
-            name: 'Large Lake',
-            kind: 'large',
+            name: 'Large Lake', kind: 'large',
             x: N * 0.20, z: N * 0.80,
             rx: 32, rz: 30, warp: 12,
             connected: true, level: 8,
@@ -299,27 +296,33 @@ function createWorldFeatures() {
         }
     ]
 
-    // Major mountains are very uncommon: about 10% Great Mountain, 5% Wall.
     const mountainRoll = rand(653, 659)
     mountains = []
 
-    if (mountainRoll < 0.10) {
+    // 4% chance for a jagged cliff massif with caves; 2.5% for a gentler
+    // high mountain with caves. Total chance of any major mountain is only 6.5%.
+    if (mountainRoll < 0.04) {
+        mountains.push({
+            name: 'Broken Escarpment',
+            kind: 'cliff',
+            x: N * 0.58, z: N * 0.36,
+            rx: 48, rz: 50, peak: 48,
+            slope: 0.78, warp: 27, edgeScale: 1.25, roughness: 0.24,
+            cliffAngle: rand(779, 811) * Math.PI * 2,
+            caveCount: 3, ridgeAmp: 5
+        })
+    } else if (mountainRoll < 0.065) {
         mountains.push({
             name: 'Great Mountain',
+            kind: 'mountain',
             x: N * 0.58, z: N * 0.36,
-            rx: 50, rz: 53, peak: 55,
-            slope: 0.42, warp: 25, edgeScale: 1.20, roughness: 0.22
-        })
-    } else if (mountainRoll < 0.15) {
-        mountains.push({
-            name: 'Wall',
-            x: N * 0.79, z: N * 0.19,
-            rx: 22, rz: 23, peak: 36,
-            slope: 0.62, warp: 16, edgeScale: 1.15, roughness: 0.24
+            rx: 50, rz: 53, peak: 46,
+            slope: 0.68, warp: 22, edgeScale: 1.18, roughness: 0.20,
+            cliffAngle: rand(831, 853) * Math.PI * 2,
+            caveCount: 2, ridgeAmp: 4
         })
     }
 
-    // Grassy rises and flatter plains scale with the expanded landmasses.
     hillFeatures = [
         { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 17, rz: 20, peak: 9, slope: 1.6, warp: 9, edgeScale: 1.15 },
         { name: 'Southwest Hills', x: N * 0.36, z: N * 0.70, rx: 17, rz: 14, peak: 8, slope: 1.55, warp: 8, edgeScale: 1.15 },
@@ -428,11 +431,48 @@ function mountainRiseAt(x, z) {
     for (const m of mountains) {
         const distance = irregularDistance(x, z, m)
         const weight = clamp(1 - distance / 1.22, 0, 1)
-        const profile = Math.pow(weight, m.slope || 0.78)
+        const baseProfile = Math.pow(weight, m.slope || 0.78)
+        let profile = baseProfile
+
+        if (m.kind === 'cliff') {
+            // One side has an irregular escarpment; the back and flanks remain
+            // sloped so the whole mountain doesn't become a flat-topped wall.
+            const dx = (x - m.x) / m.rx
+            const dz = (z - m.z) / m.rz
+            const angle = Math.atan2(dz, dx)
+            const faceAlignment = clamp(
+                (Math.cos(angle - m.cliffAngle) - 0.08) / 0.82, 0, 1
+            )
+            const raggedLip =
+                0.84 +
+                (noise(x * 0.071 + m.x, z * 0.071 + m.z) - 0.5) * 0.20 +
+                (noise(x * 0.19 + m.z, z * 0.19 + m.x) - 0.5) * 0.08
+            const cliffFace = clamp((raggedLip - distance + 0.075) / 0.15, 0, 1)
+            const unevenTop = clamp(
+                1 + (noise(x * 0.065 + m.x, z * 0.065 + m.z) - 0.5) * 0.22 +
+                (noise(x * 0.15 + m.z, z * 0.15 + m.x) - 0.5) * 0.10,
+                0.72, 1.18
+            )
+            profile = (
+                baseProfile * (1 - faceAlignment) +
+                (baseProfile * 0.18 + cliffFace * 0.82) * faceAlignment
+            ) * unevenTop
+        }
+
+        const broadRidge = (noise(
+            x * 0.083 + m.x * 0.11,
+            z * 0.083 + m.z * 0.11
+        ) - 0.5) * (m.ridgeAmp || 0) * clamp(weight * 1.6, 0, 1)
+        const fineRidge = (noise(
+            x * 0.20 + m.z * 0.13,
+            z * 0.20 + m.x * 0.13
+        ) - 0.5) * (m.ridgeAmp || 0) * 0.45 * clamp(weight * 1.8, 0, 1)
         const roughness = (noise(x * 0.11 + m.x, z * 0.11 + m.z) - 0.5) *
             (m.roughness || 0)
-        rise = Math.max(rise, profile * m.peak * (1 + roughness))
+
+        rise = Math.max(rise, Math.max(0, profile * m.peak * (1 + roughness) + broadRidge + fineRidge))
     }
+
     return rise * clamp(landMask * 1.35, 0, 1)
 }
 
@@ -613,6 +653,74 @@ function voxelize() {
 
             for (let y = heights[ci(x, z)] + 1; y <= level; y++) {
                 if (get(x, y, z) === EMPTY) set(x, y, z, WATER)
+            }
+        }
+    }
+}
+
+function carveMountainCaves() {
+    const seaLevel = oceans[0].level
+
+    for (let mountainIndex = 0; mountainIndex < mountains.length; mountainIndex++) {
+        const mountain = mountains[mountainIndex]
+        const count = mountain.caveCount || 1
+
+        for (let caveIndex = 0; caveIndex < count; caveIndex++) {
+            const offset = (caveIndex - (count - 1) / 2) * 0.50
+            const angle = mountain.cliffAngle + offset +
+                (rand(mountainIndex * 73 + caveIndex * 29 + 911,
+                      mountainIndex * 47 + caveIndex * 31 + 937) - 0.5) * 0.38
+
+            // Place entrances on the outside slope, pointing inward into the massif.
+            const mouthX = mountain.x + Math.cos(angle) * mountain.rx * 0.84
+            const mouthZ = mountain.z + Math.sin(angle) * mountain.rz * 0.84
+            const mx = clamp(Math.round(mouthX), 1, N - 2)
+            const mz = clamp(Math.round(mouthZ), 1, N - 2)
+            const mouthSurface = heights[ci(mx, mz)]
+
+            if (mouthSurface <= seaLevel + 8) continue
+
+            const inwardX = -Math.cos(angle)
+            const inwardZ = -Math.sin(angle)
+            const depth = 10 + rand(mountainIndex * 101 + caveIndex * 37 + 953,
+                                    mountainIndex * 107 + caveIndex * 41 + 971) * 8
+            const halfWidth = 1.8 + rand(mountainIndex * 113 + caveIndex * 43 + 977,
+                                         mountainIndex * 127 + caveIndex * 47 + 983) * 1.2
+            const halfHeight = 2.2 + rand(mountainIndex * 131 + caveIndex * 53 + 991,
+                                          mountainIndex * 137 + caveIndex * 59 + 997) * 1.1
+            const centerY = mouthSurface - halfHeight + 0.45
+
+            const minX = Math.max(1, Math.floor(Math.min(mouthX, mouthX + inwardX * depth) - halfWidth - 3))
+            const maxX = Math.min(N - 2, Math.ceil(Math.max(mouthX, mouthX + inwardX * depth) + halfWidth + 3))
+            const minZ = Math.max(1, Math.floor(Math.min(mouthZ, mouthZ + inwardZ * depth) - halfWidth - 3))
+            const maxZ = Math.min(N - 2, Math.ceil(Math.max(mouthZ, mouthZ + inwardZ * depth) + halfWidth + 3))
+
+            for (let x = minX; x <= maxX; x++) {
+                for (let z = minZ; z <= maxZ; z++) {
+                    const along = (x - mouthX) * inwardX + (z - mouthZ) * inwardZ
+                    if (along < -1.7 || along > depth) continue
+                    const across = (x - mouthX) * -inwardZ + (z - mouthZ) * inwardX
+                    const taper = along > depth - 2.2 ? clamp((depth - along) / 2.2, 0, 1) : 1
+                    const widthNoise = (noise(x * 0.22 + mountain.x, z * 0.22 + mountain.z) - 0.5) * 0.65
+                    const localWidth = Math.max(0.7, (halfWidth + widthNoise) * taper)
+
+                    const colHeight = heights[ci(x, z)]
+                    if (colHeight <= seaLevel + 2) continue
+
+                    for (let y = seaLevel + 2; y <= colHeight; y++) {
+                        const tunnelY = centerY + Math.max(0, along) * 0.18 +
+                            (noise(x * 0.16 + mountain.z, y * 0.18 + mountain.x) - 0.5) * 0.55
+                        const localHeight = Math.max(0.7, (halfHeight +
+                            (noise(x * 0.17 + mountain.x, z * 0.17 + mountain.z + y * 0.03) - 0.5) * 0.6) * taper)
+                        const vertical = (y - tunnelY) / localHeight
+                        const horizontal = across / localWidth
+
+                        if (horizontal * horizontal + vertical * vertical < 1 &&
+                            get(x, y, z) !== EMPTY && get(x, y, z) !== WATER) {
+                            set(x, y, z, EMPTY)
+                        }
+                    }
+                }
             }
         }
     }
@@ -909,43 +1017,35 @@ const faces = [
     { d: [0, 0, -1], v: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]] }
 ]
 
-function buildChunk(cx, cz) {
+function buildWorldMesh() {
+    // One world mesh per material means there are no internal chunk boundary
+    // planes to leak into view. Face culling still removes every hidden block face.
     const groups = Array.from({ length: MCOUNT }, () => ({
         p: [], n: [], u: [], c: [], i: []
     }))
 
-    const x0 = cx * CS, z0 = cz * CS
-    const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
-
-    // Use the highest actually occupied voxel in this chunk, not height + 6.
-    // Tree canopies from a higher neighboring column may overhang into a lower
-    // chunk; height-based clipping creates flat, visible chunk-face cuts.
-    let maxY = 0
-    for (let y = H - 1; y >= 0; y--) {
+    let maxY = H - 1
+    while (maxY > 0) {
         let occupied = false
-        for (let z = z0; z < z1 && !occupied; z++) {
-            for (let x = x0; x < x1; x++) {
-                if (get(x, y, z) !== EMPTY) {
+        for (let z = 0; z < N && !occupied; z++) {
+            for (let x = 0; x < N; x++) {
+                if (get(x, maxY, z) !== EMPTY) {
                     occupied = true
                     break
                 }
             }
         }
-        if (occupied) {
-            maxY = y
-            break
-        }
+        if (occupied) break
+        maxY--
     }
 
     for (let y = 0; y <= maxY; y++) {
-        for (let z = z0; z < z1; z++) {
-            for (let x = x0; x < x1; x++) {
+        for (let z = 0; z < N; z++) {
+            for (let x = 0; x < N; x++) {
                 const type = get(x, y, z)
                 if (type === EMPTY) continue
 
                 for (const f of faces) {
-                    // Query the full voxel map even at chunk boundaries so shared
-                    // faces between adjacent chunks are never emitted twice.
                     const neighbor = get(x + f.d[0], y + f.d[1], z + f.d[2])
                     if (neighbor !== EMPTY && (neighbor !== WATER || type === WATER)) continue
 
@@ -959,7 +1059,6 @@ function buildChunk(cx, cz) {
                         g.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
                         if (type === LEAVES) g.c.push(1, 1, 1, 1)
                     }
-
                     g.i.push(b, b + 1, b + 2, b, b + 2, b + 3)
                 }
             }
@@ -970,7 +1069,7 @@ function buildChunk(cx, cz) {
         const g = groups[t]
         if (!g.p.length) continue
 
-        const mesh = new BABYLON.Mesh('chunk_' + cx + '_' + cz + '_' + t, scene)
+        const mesh = new BABYLON.Mesh('world_' + t, scene)
         const vd = new BABYLON.VertexData()
         vd.positions = g.p
         vd.normals = g.n
@@ -978,7 +1077,6 @@ function buildChunk(cx, cz) {
         if (t === LEAVES) vd.colors = g.c
         vd.indices = g.i
         vd.applyToMesh(mesh, false)
-
         mesh.material = materials[t]
         mesh.position.y = YOFF
         mesh.isPickable = false
@@ -1319,13 +1417,10 @@ function generate() {
     createPonds()
     createRiverChannels()
     voxelize()
+    carveMountainCaves()
     addTrees()
 
-    for (let x = 0; x < N; x += CS) {
-        for (let z = 0; z < N; z += CS) {
-            buildChunk(x / CS, z / CS)
-        }
-    }
+    buildWorldMesh()
 
     addGroundDecorations()
 
