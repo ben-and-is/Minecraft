@@ -237,7 +237,10 @@ function isSolid(x, y, z) {
 }
 
 function rand(x, z) {
-    const n = Math.sin(x * 127.1 + z * 311.7 + seed * 74.7) * 43758.5453
+    // Keep the seed contribution in a stable numeric range so integer world
+    // seeds produce distinct, repeatable noise rather than near-identical maps.
+    const seedOffset = (seed % 1000003) * 0.0747
+    const n = Math.sin(x * 127.1 + z * 311.7 + seedOffset) * 43758.5453
     return n - Math.floor(n)
 }
 
@@ -253,85 +256,125 @@ function noise(x, z) {
 function createWorldFeatures() {
     oceans = [{ name: 'Ocean', level: 8 }]
 
-    // Mountains are rare world-generation events. Most seeds have none.
+    // Every feature is derived from the current world's seed: coordinates,
+    // sizes, coastline warping, and local relief change between world generations.
+    const vary = (key, base, amount) => base + (rand(key, key * 1.91 + 17) - 0.5) * amount
+    const scale = (key, base, amount) => base * (1 + (rand(key + 23, key * 1.37 + 29) - 0.5) * amount)
+
     islands = [
-        { name: 'Main Island', x: N * 0.58, z: N * 0.36, rx: 60, rz: 57, peak: 22, warp: 17, edgeScale: 0.85 },
-        { name: 'Southwest Island', x: N * 0.34, z: N * 0.70, rx: 58, rz: 48, peak: 20, warp: 13, edgeScale: 0.70 },
-        { name: 'Northwest Island', x: N * 0.18, z: N * 0.18, rx: 31, rz: 28, peak: 15, warp: 8, edgeScale: 0.80 },
-        { name: 'Northeast Island', x: N * 0.79, z: N * 0.19, rx: 35, rz: 29, peak: 16, warp: 10, edgeScale: 0.80 },
-        { name: 'Southeast Island', x: N * 0.77, z: N * 0.77, rx: 38, rz: 33, peak: 17, warp: 9, edgeScale: 0.80 },
-        { name: 'North Shoal', x: N * 0.43, z: N * 0.17, rx: 22, rz: 18, peak: 13, warp: 6, edgeScale: 0.75 }
+        {
+            name: 'Main Island',
+            x: N * vary(1001, 0.58, 0.075), z: N * vary(1003, 0.36, 0.075),
+            rx: scale(1007, 60, 0.22), rz: scale(1009, 57, 0.22),
+            peak: scale(1013, 22, 0.30), warp: scale(1019, 17, 0.45), edgeScale: vary(1021, 0.85, 0.24)
+        },
+        {
+            name: 'Southwest Island',
+            x: N * vary(1031, 0.33, 0.055), z: N * vary(1033, 0.70, 0.045),
+            rx: scale(1039, 58, 0.20), rz: scale(1049, 48, 0.22),
+            peak: scale(1051, 20, 0.30), warp: scale(1061, 13, 0.55), edgeScale: vary(1063, 0.70, 0.24)
+        },
+        {
+            name: 'Northwest Island',
+            x: N * vary(1069, 0.19, 0.035), z: N * vary(1087, 0.19, 0.035),
+            rx: scale(1091, 31, 0.22), rz: scale(1093, 28, 0.22),
+            peak: scale(1097, 15, 0.30), warp: scale(1103, 8, 0.65), edgeScale: vary(1109, 0.80, 0.26)
+        },
+        {
+            name: 'Northeast Island',
+            x: N * vary(1117, 0.77, 0.035), z: N * vary(1123, 0.19, 0.035),
+            rx: scale(1129, 35, 0.20), rz: scale(1151, 29, 0.22),
+            peak: scale(1153, 16, 0.30), warp: scale(1163, 10, 0.65), edgeScale: vary(1171, 0.80, 0.26)
+        },
+        {
+            name: 'Southeast Island',
+            x: N * vary(1181, 0.76, 0.035), z: N * vary(1187, 0.76, 0.035),
+            rx: scale(1193, 38, 0.20), rz: scale(1201, 33, 0.22),
+            peak: scale(1213, 17, 0.30), warp: scale(1217, 9, 0.65), edgeScale: vary(1223, 0.80, 0.26)
+        },
+        {
+            name: 'North Shoal',
+            x: N * vary(1229, 0.43, 0.04), z: N * vary(1231, 0.17, 0.035),
+            rx: scale(1237, 22, 0.24), rz: scale(1249, 18, 0.24),
+            peak: scale(1259, 13, 0.30), warp: scale(1277, 6, 0.70), edgeScale: vary(1279, 0.75, 0.28)
+        }
     ]
 
     ponds = [
         {
             name: 'Small Pond', kind: 'small',
-            x: N * 0.57, z: N * 0.47,
-            rx: 6, rz: 5, warp: 2.8,
+            x: N * vary(1301, 0.57, 0.12), z: N * vary(1303, 0.47, 0.12),
+            rx: scale(1307, 6, 0.40), rz: scale(1319, 5, 0.40),
+            warp: scale(1321, 2.8, 0.70),
             connected: false, level: 7
         },
         {
             name: 'Medium Lake', kind: 'medium',
-            x: N * 0.40, z: N * 0.50,
-            rx: 13.5, rz: 12, warp: 5.5,
+            x: N * vary(1327, 0.40, 0.06), z: N * vary(1329, 0.50, 0.06),
+            rx: scale(1333, 13.5, 0.30), rz: scale(1339, 12, 0.30),
+            warp: scale(1341, 5.5, 0.60),
             connected: true, level: 8,
             riverPath: [
-                { x: N * 0.40, z: N * 0.50 },
-                { x: N * 0.35, z: N * 0.51 },
-                { x: N * 0.31, z: N * 0.50 },
-                { x: N * 0.28, z: N * 0.50 }
+                { x: N * vary(1343, 0.40, 0.06), z: N * vary(1349, 0.50, 0.06) },
+                { x: N * vary(1351, 0.35, 0.05), z: N * vary(1357, 0.51, 0.05) },
+                { x: N * vary(1361, 0.31, 0.05), z: N * vary(1367, 0.50, 0.05) },
+                { x: N * vary(1373, 0.28, 0.04), z: N * vary(1381, 0.50, 0.04) }
             ]
         },
         {
             name: 'Large Lake', kind: 'large',
-            x: N * 0.20, z: N * 0.80,
-            rx: 32, rz: 30, warp: 12,
+            x: N * vary(1399, 0.20, 0.05), z: N * vary(1409, 0.80, 0.05),
+            rx: scale(1411, 32, 0.28), rz: scale(1423, 30, 0.28),
+            warp: scale(1427, 12, 0.55),
             connected: true, level: 8,
             riverPath: [
-                { x: N * 0.20, z: N * 0.80 },
-                { x: N * 0.31, z: N * 0.81 },
-                { x: N * 0.43, z: N * 0.82 },
-                { x: N * 0.56, z: N * 0.81 }
+                { x: N * vary(1429, 0.20, 0.05), z: N * vary(1433, 0.80, 0.05) },
+                { x: N * vary(1439, 0.31, 0.05), z: N * vary(1447, 0.81, 0.05) },
+                { x: N * vary(1451, 0.43, 0.05), z: N * vary(1453, 0.82, 0.05) },
+                { x: N * vary(1459, 0.56, 0.05), z: N * vary(1471, 0.81, 0.05) }
             ]
         }
     ]
 
-    const mountainRoll = rand(653, 659)
+    const mountainRoll = rand(1481, 1483)
     mountains = []
 
-    // 4% chance for a jagged cliff massif with caves; 2.5% for a gentler
-    // high mountain with caves. Total chance of any major mountain is only 6.5%.
+    // Distinct seeds get distinct rare-mountain outcomes, positions and profiles.
     if (mountainRoll < 0.04) {
+        const angle = rand(1487, 1489) * Math.PI * 2
         mountains.push({
             name: 'Broken Escarpment',
             kind: 'cliff',
-            x: N * 0.58, z: N * 0.36,
-            rx: 48, rz: 50, peak: 48,
-            slope: 0.78, warp: 27, edgeScale: 1.25, roughness: 0.24,
-            cliffAngle: rand(779, 811) * Math.PI * 2,
-            caveCount: 3, ridgeAmp: 5
+            x: N * vary(1493, 0.57, 0.12), z: N * vary(1499, 0.37, 0.12),
+            rx: scale(1511, 48, 0.26), rz: scale(1523, 50, 0.26), peak: scale(1531, 48, 0.18),
+            slope: vary(1543, 0.78, 0.22), warp: scale(1549, 27, 0.50),
+            edgeScale: vary(1553, 1.25, 0.30), roughness: vary(1559, 0.24, 0.20),
+            cliffAngle: angle,
+            caveCount: 2 + Math.floor(rand(1567, 1571) * 3), ridgeAmp: scale(1573, 5, 0.60)
         })
     } else if (mountainRoll < 0.065) {
+        const angle = rand(1579, 1583) * Math.PI * 2
         mountains.push({
             name: 'Great Mountain',
             kind: 'mountain',
-            x: N * 0.58, z: N * 0.36,
-            rx: 50, rz: 53, peak: 46,
-            slope: 0.68, warp: 22, edgeScale: 1.18, roughness: 0.20,
-            cliffAngle: rand(831, 853) * Math.PI * 2,
-            caveCount: 2, ridgeAmp: 4
+            x: N * vary(1589, 0.58, 0.12), z: N * vary(1597, 0.36, 0.12),
+            rx: scale(1601, 50, 0.24), rz: scale(1607, 53, 0.24), peak: scale(1609, 46, 0.20),
+            slope: vary(1613, 0.68, 0.22), warp: scale(1619, 22, 0.55),
+            edgeScale: vary(1621, 1.18, 0.30), roughness: vary(1627, 0.20, 0.30),
+            cliffAngle: angle,
+            caveCount: 1 + Math.floor(rand(1637, 1641) * 3), ridgeAmp: scale(6427, 4, 0.70)
         })
     }
 
     hillFeatures = [
-        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 17, rz: 20, peak: 9, slope: 1.6, warp: 9, edgeScale: 1.15 },
-        { name: 'Southwest Hills', x: N * 0.36, z: N * 0.70, rx: 17, rz: 14, peak: 8, slope: 1.55, warp: 8, edgeScale: 1.15 },
-        { name: 'Southeast Hills', x: N * 0.75, z: N * 0.77, rx: 14, rz: 13, peak: 7, slope: 1.6, warp: 7, edgeScale: 1.15 }
+        { name: 'Main Island Hills', x: N * vary(1657, 0.39, 0.12), z: N * vary(1663, 0.53, 0.12), rx: scale(1667, 17, 0.30), rz: scale(1669, 20, 0.30), peak: scale(1693, 9, 0.35), slope: vary(1697, 1.6, 0.26), warp: scale(1699, 9, 0.65), edgeScale: vary(1709, 1.15, 0.30) },
+        { name: 'Southwest Hills', x: N * vary(1721, 0.36, 0.10), z: N * vary(1723, 0.70, 0.10), rx: scale(1727, 17, 0.30), rz: scale(1733, 14, 0.30), peak: scale(1741, 8, 0.35), slope: vary(1747, 1.55, 0.26), warp: scale(1753, 8, 0.65), edgeScale: vary(1759, 1.15, 0.30) },
+        { name: 'Southeast Hills', x: N * vary(1769, 0.75, 0.10), z: N * vary(1777, 0.77, 0.10), rx: scale(1783, 14, 0.30), rz: scale(1787, 13, 0.30), peak: scale(1789, 7, 0.35), slope: vary(1801, 1.6, 0.26), warp: scale(811, 7, 0.65), edgeScale: vary(821, 1.15, 0.30) }
     ]
 
     plains = [
-        { x: N * 0.60, z: N * 0.46, rx: 23, rz: 19 },
-        { x: N * 0.35, z: N * 0.68, rx: 20, rz: 16 }
+        { x: N * vary(823, 0.60, 0.12), z: N * vary(827, 0.46, 0.12), rx: scale(829, 23, 0.35), rz: scale(839, 19, 0.35) },
+        { x: N * vary(853, 0.35, 0.10), z: N * vary(857, 0.68, 0.10), rx: scale(859, 20, 0.35), rz: scale(863, 16, 0.35) }
     ]
 }
 
@@ -1406,7 +1449,7 @@ function generate() {
     for (const m of meshes) m.dispose()
     meshes = []
 
-    seed = Math.random() * 1000
+    seed = Math.floor(Math.random() * 2147483646) + 1
 
     voxels.fill(EMPTY)
     waterLevels.fill(EMPTY)
@@ -1462,7 +1505,7 @@ function generate() {
     pitch = 0
     syncCamera()
 
-    status.textContent = 'World ready. WASD to move, Space to jump.'
+    status.textContent = 'World ready. Seed: ' + seed + '. WASD to move, Space to jump.'
 }
 
 window.addEventListener('keydown', e => {
