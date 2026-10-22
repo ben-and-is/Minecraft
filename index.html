@@ -92,8 +92,8 @@
 <body>
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
-        <strong>🌍 Voxel World</strong>
-        <p>WASD to move · Shift to run · Hold Space to jump/swim up<br>In water, look up/down + W to swim; hold Ctrl to dive.<br>Explore mountains, deep oceans, ponds and flat plains.</p>
+        <strong>🌍 Voxel World — Wall &amp; Great Mountain</strong>
+        <p>WASD to move · Shift to run · Hold Space to jump/swim up<br>In water, look up/down + W to swim; hold Ctrl to dive.<br>Explore the Wall, Great Mountain, three pond sizes, and an ocean with branching waterways.</p>
         <button id="g" type="button">Generate World</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -111,7 +111,8 @@ const scene = new BABYLON.Scene(engine)
 scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
 scene.collisionsEnabled = false
 
-const N = 64, H = 48, CS = 16, YOFF = -5
+// A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
+const N = 192, H = 64, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5
 const MCOUNT = 6
 
@@ -248,28 +249,68 @@ function noise(x, z) {
 }
 
 function createWorldFeatures() {
+    // The old pond-sized ocean is now the Medium Pond. The new ocean's open-water
+    // footprint is roughly 25+ 16×16 chunk-equivalents on this 12×12-chunk map.
     oceans = [{
-        x: N * 0.24 + (rand(601, 607) - 0.5) * 3,
-        z: N * 0.25 + (rand(613, 619) - 0.5) * 3,
-        rx: 10.5 + rand(617, 631) * 1.2,
-        rz: 9.5 + rand(641, 647) * 1.2,
+        name: 'Ocean',
+        x: N * 0.34 + (rand(601, 607) - 0.5) * 2,
+        z: N * 0.34 + (rand(613, 619) - 0.5) * 2,
+        rx: 50,
+        rz: 46,
+        warp: 6,
         level: 8
     }]
 
-    // Most worlds keep a mountain, but occasionally generate a quieter landscape.
-    mountains = rand(653, 659) < 0.16 ? [] : [{
-        x: N * 0.72 + (rand(653, 659) - 0.5) * 3,
-        z: N * 0.27 + (rand(661, 673) - 0.5) * 3,
-        rx: 10.0,
-        rz: 10.8,
-        peak: 30
-    }]
+    ponds = [
+        {
+            name: 'Small Pond',
+            kind: 'small',
+            x: N * 0.84 + (rand(617, 631) - 0.5) * 2,
+            z: N * 0.16 + (rand(641, 647) - 0.5) * 2,
+            rx: 4.6, rz: 3.8, warp: 1.8,
+            connected: false, level: null
+        },
+        {
+            name: 'Medium Pond',
+            kind: 'medium',
+            x: N * 0.72 + (rand(653, 659) - 0.5) * 2,
+            z: N * 0.20 + (rand(661, 673) - 0.5) * 2,
+            rx: 10.5, rz: 9.5, warp: 3.0,
+            connected: true, level: 8
+        },
+        {
+            name: 'Large Pond',
+            kind: 'large',
+            x: N * 0.78 + (rand(677, 683) - 0.5) * 2,
+            z: N * 0.82 + (rand(691, 701) - 0.5) * 2,
+            // More than four times the Medium Pond's surface area.
+            rx: 25, rz: 23, warp: 5.5,
+            connected: true, level: 8
+        }
+    ]
+
+    mountains = [
+        {
+            name: 'Wall',
+            x: N * 0.80 + (rand(653, 659) - 0.5) * 2,
+            z: N * 0.25 + (rand(661, 673) - 0.5) * 2,
+            rx: 10.0, rz: 10.8, peak: 30,
+            slope: 0.78, warp: 1.8, roughness: 0.06
+        },
+        {
+            name: 'Great Mountain',
+            x: N * 0.73 + (rand(713, 719) - 0.5) * 3,
+            z: N * 0.52 + (rand(727, 733) - 0.5) * 3,
+            // A much broader footprint and a slightly gentler slope than Wall.
+            rx: 36, rz: 38, peak: 39,
+            slope: 0.68, warp: 5.5, roughness: 0.10
+        }
+    ]
 
     plains = [{
-        x: N * 0.25 + (rand(677, 683) - 0.5) * 3,
-        z: N * 0.72 + (rand(691, 701) - 0.5) * 3,
-        rx: 13,
-        rz: 11
+        x: N * 0.22 + (rand(677, 683) - 0.5) * 3,
+        z: N * 0.78 + (rand(691, 701) - 0.5) * 3,
+        rx: 24, rz: 20
     }]
 }
 
@@ -288,15 +329,44 @@ function plainsInfluence(x, z) {
     return influence
 }
 
+// Warp and perturb ellipse distance so shorelines and mountain footprints have
+// uneven coves, lobes, shoulders, and ridges instead of smooth oval outlines.
+function irregularDistance(x, z, feature) {
+    const warp = feature.warp || 0
+    const warpX = (noise(
+        x * 0.047 + feature.x * 0.13,
+        z * 0.047 + feature.z * 0.13
+    ) - 0.5) * warp
+    const warpZ = (noise(
+        x * 0.047 + feature.z * 0.13 + 19.7,
+        z * 0.047 + feature.x * 0.13 + 41.3
+    ) - 0.5) * warp
+    const dx = (x + warpX - feature.x) / feature.rx
+    const dz = (z + warpZ - feature.z) / feature.rz
+    const distance = Math.sqrt(dx * dx + dz * dz)
+    const angle = Math.atan2(dz, dx)
+    const lobes =
+        Math.sin(angle * 3 + feature.x * 0.07) * 0.045 +
+        Math.sin(angle * 5 + feature.z * 0.09) * 0.026 +
+        Math.sin(angle * 7 + (feature.x + feature.z) * 0.04) * 0.012
+    const broadNoise =
+        (noise(x * 0.085 + feature.x * 0.17, z * 0.085 + feature.z * 0.17) - 0.5) * 0.10
+    const fineNoise =
+        (noise(x * 0.21 + feature.z * 0.09, z * 0.21 + feature.x * 0.09) - 0.5) * 0.045
+
+    return distance + lobes + broadNoise + fineNoise
+}
+
 function mountainRiseAt(x, z) {
     let rise = 0
 
     for (const m of mountains) {
-        const dx = (x - m.x) / m.rx
-        const dz = (z - m.z) / m.rz
-        const distance = Math.sqrt(dx * dx + dz * dz)
-        const weight = clamp(1 - distance / 1.2, 0, 1)
-        rise = Math.max(rise, Math.pow(weight, 0.78) * m.peak)
+        const distance = irregularDistance(x, z, m)
+        const weight = clamp(1 - distance / 1.22, 0, 1)
+        const profile = Math.pow(weight, m.slope || 0.78)
+        const roughness = (noise(x * 0.11 + m.x, z * 0.11 + m.z) - 0.5) *
+            (m.roughness || 0)
+        rise = Math.max(rise, profile * m.peak * (1 + roughness))
     }
 
     return rise
@@ -336,20 +406,16 @@ function createOceans() {
     waterLevels.fill(EMPTY)
 
     for (const ocean of oceans) {
-        const x0 = Math.max(1, Math.floor(ocean.x - ocean.rx * 1.5))
-        const x1 = Math.min(N - 2, Math.ceil(ocean.x + ocean.rx * 1.5))
-        const z0 = Math.max(1, Math.floor(ocean.z - ocean.rz * 1.5))
-        const z1 = Math.min(N - 2, Math.ceil(ocean.z + ocean.rz * 1.5))
+        const marginX = (ocean.warp || 0) + 3
+        const marginZ = (ocean.warp || 0) + 3
+        const x0 = Math.max(1, Math.floor(ocean.x - ocean.rx * 1.5 - marginX))
+        const x1 = Math.min(N - 2, Math.ceil(ocean.x + ocean.rx * 1.5 + marginX))
+        const z0 = Math.max(1, Math.floor(ocean.z - ocean.rz * 1.5 - marginZ))
+        const z1 = Math.min(N - 2, Math.ceil(ocean.z + ocean.rz * 1.5 + marginZ))
 
         for (let x = x0; x <= x1; x++) {
             for (let z = z0; z <= z1; z++) {
-                const dx = (x - ocean.x) / ocean.rx
-                const dz = (z - ocean.z) / ocean.rz
-                const distance = Math.sqrt(dx * dx + dz * dz)
-                const broadWobble = (noise(x * 0.31 + ocean.x, z * 0.31 + ocean.z) - 0.5) * 0.28
-                const fineWobble = (noise(x * 0.73 + ocean.z, z * 0.73 + ocean.x) - 0.5) * 0.12
-                const edge = distance + broadWobble + fineWobble
-
+                const edge = irregularDistance(x, z, ocean)
                 if (edge > 1.45) continue
 
                 const col = ci(x, z)
@@ -363,8 +429,7 @@ function createOceans() {
                     heights[col] = Math.min(originalHeight, Math.max(2, ocean.level - depth))
                     waterLevels[col] = ocean.level
                 } else {
-                    // Build a continuous raised shoreline outside the water mask.
-                    // This prevents low neighboring terrain from looking like ocean overflow.
+                    // Raise a soft, continuous bank around the irregular coastline.
                     const t = clamp((edge - 1) / 0.45, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const bankHeight = Math.round(
@@ -382,71 +447,127 @@ function createOceans() {
 }
 
 function createPonds() {
-    ponds = []
-    const count = 1 + Math.floor(rand(713, 921) * 2)
-    let tries = 0
-
-    while (ponds.length < count && tries < 200) {
-        const k = tries++
-        const x = N * 0.72 + (rand(k * 29 + 53, k * 11 + 29) - 0.5) * 7
-        const z = N * 0.72 + (rand(k * 19 + 53, k * 11 + 29) - 0.5) * 7
-        const rx = 3.2 + rand(k * 41 + 7, k * 59 + 13) * 2.2
-        const rz = 3.0 + rand(k * 23 + 31, k * 17 + 17) * 2.0
-        const p = { x, z, rx, rz, level: 0 }
-
-        if (ponds.some(q =>
-            Math.hypot((x - q.x) / (rx + q.rx + 3), (z - q.z) / (rz + q.rz + 3)) < 1
-        )) continue
-
-        let lowestRim = H
-        for (let a = 0; a < 32; a++) {
-            const angle = a / 32 * Math.PI * 2
-            const sx = clamp(Math.round(x + Math.cos(angle) * rx * 1.3), 1, N - 2)
-            const sz = clamp(Math.round(z + Math.sin(angle) * rz * 1.3), 1, N - 2)
-            lowestRim = Math.min(lowestRim, heights[ci(sx, sz)])
+    for (const p of ponds) {
+        if (p.connected) {
+            p.level = oceans[0].level
+        } else {
+            let lowestRim = H
+            for (let a = 0; a < 40; a++) {
+                const angle = a / 40 * Math.PI * 2
+                const sx = clamp(Math.round(p.x + Math.cos(angle) * (p.rx * 1.35 + (p.warp || 0))), 1, N - 2)
+                const sz = clamp(Math.round(p.z + Math.sin(angle) * (p.rz * 1.35 + (p.warp || 0))), 1, N - 2)
+                lowestRim = Math.min(lowestRim, heights[ci(sx, sz)])
+            }
+            p.level = clamp(
+                lowestRim - 1 - Math.floor(rand(p.x + 101, p.z + 137) * 2),
+                4,
+                H - 10
+            )
         }
-        p.level = clamp(
-            lowestRim - 1 - Math.floor(rand(x + 101, z + 137) * 2),
-            4,
-            H - 10
-        )
-        ponds.push(p)
     }
 
     for (const p of ponds) {
-        const x0 = Math.max(1, Math.floor(p.x - p.rx * 1.55))
-        const x1 = Math.min(N - 2, Math.ceil(p.x + p.rx * 1.55))
-        const z0 = Math.max(1, Math.floor(p.z - p.rz * 1.55))
-        const z1 = Math.min(N - 2, Math.ceil(p.z + p.rz * 1.55))
+        const margin = (p.warp || 0) + 3
+        const x0 = Math.max(1, Math.floor(p.x - p.rx * 1.55 - margin))
+        const x1 = Math.min(N - 2, Math.ceil(p.x + p.rx * 1.55 + margin))
+        const z0 = Math.max(1, Math.floor(p.z - p.rz * 1.55 - margin))
+        const z1 = Math.min(N - 2, Math.ceil(p.z + p.rz * 1.55 + margin))
 
         for (let x = x0; x <= x1; x++) {
             for (let z = z0; z <= z1; z++) {
-                const dx = (x - p.x) / p.rx
-                const dz = (z - p.z) / p.rz
-                const distance = Math.sqrt(dx * dx + dz * dz)
-                const broadWobble = (noise(x * 0.37 + p.x, z * 0.37 + p.z) - 0.5) * 0.44
-                const fineWobble = (noise(x * 0.83 + p.z, z * 0.83 + p.x) - 0.5) * 0.16
-                const edge = distance + broadWobble + fineWobble
-
+                const edge = irregularDistance(x, z, p)
                 if (edge > 1.48) continue
 
                 const col = ci(x, z)
                 const originalHeight = heights[col]
 
                 if (edge <= 1) {
-                    const depth = 1 + Math.floor(
-                        Math.max(0, 1 - edge) * 3 +
-                        (noise(x * 0.7 + seed, z * 0.7 - seed) - 0.5) * 0.3
-                    )
+                    const depth = p.kind === 'large'
+                        ? 2 + Math.floor(Math.max(0, 1 - edge) * 4)
+                        : p.kind === 'medium'
+                            ? 2 + Math.floor(Math.max(0, 1 - edge) * 3)
+                            : 1 + Math.floor(Math.max(0, 1 - edge) * 3)
                     heights[col] = Math.min(originalHeight, Math.max(2, p.level - depth))
                     waterLevels[col] = p.level
-                } else if (originalHeight > p.level) {
+                } else {
                     const t = clamp((edge - 1) / 0.48, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const bankHeight = Math.round(
-                        p.level + (originalHeight - p.level) * smooth
+                        p.level + (Math.max(originalHeight, p.level) - p.level) * smooth
                     )
                     heights[col] = Math.min(originalHeight, bankHeight)
+                }
+            }
+        }
+    }
+}
+
+function createRiverChannels() {
+    const ocean = oceans[0]
+
+    for (const pond of ponds) {
+        if (!pond.connected) continue
+
+        // Both lakes have a continuous, irregular river mouth into the ocean.
+        const points = pond.kind === 'medium'
+            ? [
+                { x: ocean.x + ocean.rx * 0.65, z: ocean.z - ocean.rz * 0.55 },
+                { x: N * 0.62, z: N * 0.18 },
+                { x: pond.x, z: pond.z }
+            ]
+            : [
+                { x: ocean.x + ocean.rx * 0.22, z: ocean.z + ocean.rz * 0.85 },
+                { x: N * 0.54, z: N * 0.65 },
+                { x: N * 0.68, z: N * 0.75 },
+                { x: pond.x, z: pond.z }
+            ]
+
+        const widthBase = pond.kind === 'large' ? 3.2 : 2.25
+        const level = ocean.level
+
+        for (let segment = 0; segment < points.length - 1; segment++) {
+            const a = points[segment]
+            const b = points[segment + 1]
+            const length = Math.hypot(b.x - a.x, b.z - a.z)
+            const samples = Math.max(1, Math.ceil(length * 2.5))
+
+            for (let step = 0; step <= samples; step++) {
+                const t = step / samples
+                const px = a.x + (b.x - a.x) * t
+                const pz = a.z + (b.z - a.z) * t
+                const width = widthBase + (noise(px * 0.13 + pond.x, pz * 0.13 + pond.z) - 0.5) * 1.1
+                const x0 = Math.max(1, Math.floor(px - width - 3))
+                const x1 = Math.min(N - 2, Math.ceil(px + width + 3))
+                const z0 = Math.max(1, Math.floor(pz - width - 3))
+                const z1 = Math.min(N - 2, Math.ceil(pz + width + 3))
+
+                for (let x = x0; x <= x1; x++) {
+                    for (let z = z0; z <= z1; z++) {
+                        const distance = Math.hypot(x + 0.5 - px, z + 0.5 - pz)
+                        const localWidth = width + (noise(x * 0.17 + seed, z * 0.17 - seed) - 0.5) * 0.55
+                        if (distance > localWidth + 2.2) continue
+
+                        const col = ci(x, z)
+                        const originalHeight = heights[col]
+
+                        if (distance <= localWidth) {
+                            const depth = 2 + Math.floor(noise(x * 0.3 + seed, z * 0.3 - seed) * 3)
+                            heights[col] = Math.min(originalHeight, Math.max(1, level - depth))
+                            waterLevels[col] = level
+                        } else if (waterLevels[col] !== level) {
+                            // Gently lift low land alongside the water to keep the channel contained.
+                            const bankT = clamp((distance - localWidth) / 2.2, 0, 1)
+                            const smooth = bankT * bankT * (3 - 2 * bankT)
+                            const bankHeight = Math.round(
+                                (level + 1) +
+                                (Math.max(originalHeight, level + 1) - (level + 1)) * smooth
+                            )
+                            heights[col] = Math.max(
+                                originalHeight,
+                                Math.min(Math.max(originalHeight, level + 1), bankHeight)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -1180,6 +1301,7 @@ function generate() {
     createHeightMap()
     createOceans()
     createPonds()
+    createRiverChannels()
     voxelize()
     addTrees()
 
@@ -1199,6 +1321,8 @@ function generate() {
             for (let z = Math.max(2, Math.floor(N / 2 - radius));
                 z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
 
+                // Do not start the player underwater when the expanded ocean covers map center.
+                if (waterLevels[ci(x, z)] !== EMPTY) continue
                 const floor = findGround(x + .5, z + .5)
                 if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
 
