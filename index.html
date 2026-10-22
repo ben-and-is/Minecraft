@@ -271,7 +271,7 @@ function createWorldFeatures() {
             kind: 'small',
             x: N * 0.57, z: N * 0.47,
             rx: 4.6, rz: 3.8, warp: 1.8,
-            connected: false, level: 6
+            connected: false, level: 7
         },
         {
             name: 'Medium Lake',
@@ -501,10 +501,10 @@ function createPonds() {
                     const t = clamp((edge - 1) / 0.38, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const target = Math.round(
-                        (seaLevel + 1) +
-                        (originalHeight - (seaLevel + 1)) * smooth
+                        seaLevel +
+                        (originalHeight - seaLevel) * smooth
                     )
-                    heights[col] = Math.max(seaLevel + 1, Math.min(originalHeight, target))
+                    heights[col] = Math.max(seaLevel, Math.min(originalHeight, target))
                 }
             }
         }
@@ -563,7 +563,7 @@ function createRiverChannels() {
                                 (originalHeight - (seaLevel + 1)) * smooth
                             )
                             heights[col] = Math.max(
-                                seaLevel + 1,
+                                seaLevel,
                                 Math.min(originalHeight, target)
                             )
                         }
