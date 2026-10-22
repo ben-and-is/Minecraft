@@ -112,7 +112,7 @@ scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
 scene.collisionsEnabled = false
 
 // A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
-const N = 192, H = 64, CS = 16, YOFF = -5
+const N = 192, H = 80, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5
 const MCOUNT = 6
 
@@ -253,31 +253,29 @@ function noise(x, z) {
 function createWorldFeatures() {
     oceans = [{ name: 'Ocean', level: 8 }]
 
-    // One main island plus several separated islands, all surrounded by the same ocean.
+    // Enlarged, irregular island chain with enough separation to keep multiple islands.
     islands = [
-        { name: 'Main Island', x: N * 0.50, z: N * 0.48, rx: 34, rz: 32, peak: 15, warp: 4.8 },
-        { name: 'Southwest Island', x: N * 0.18, z: N * 0.80, rx: 35, rz: 32, peak: 13, warp: 5.4 },
-        { name: 'Northwest Island', x: N * 0.18, z: N * 0.20, rx: 17, rz: 15, peak: 10, warp: 3.0 },
-        { name: 'Northeast Island', x: N * 0.82, z: N * 0.20, rx: 19, rz: 16, peak: 10, warp: 3.6 },
-        { name: 'Southeast Island', x: N * 0.83, z: N * 0.81, rx: 21, rz: 18, peak: 12, warp: 4.0 },
-        { name: 'North Shoal', x: N * 0.50, z: N * 0.105, rx: 11, rz: 9, peak: 9, warp: 2.4 }
+        { name: 'Main Island', x: N * 0.52, z: N * 0.45, rx: 48, rz: 45, peak: 19, warp: 22 },
+        { name: 'Southwest Island', x: N * 0.22, z: N * 0.82, rx: 43, rz: 39, peak: 17, warp: 22 },
+        { name: 'Northwest Island', x: N * 0.16, z: N * 0.15, rx: 24, rz: 21, peak: 13, warp: 13 },
+        { name: 'Northeast Island', x: N * 0.85, z: N * 0.17, rx: 27, rz: 23, peak: 14, warp: 15 },
+        { name: 'Southeast Island', x: N * 0.85, z: N * 0.82, rx: 31, rz: 27, peak: 15, warp: 17 },
+        { name: 'North Shoal', x: N * 0.50, z: N * 0.09, rx: 17, rz: 14, peak: 11, warp: 9 }
     ]
 
-    // The inland pond is below sea level; the other lakes form tidal inlets
-    // with shallow channels that open into the surrounding ocean.
     ponds = [
         {
             name: 'Small Pond',
             kind: 'small',
             x: N * 0.57, z: N * 0.47,
-            rx: 4.6, rz: 3.8, warp: 1.8,
+            rx: 4.6, rz: 3.8, warp: 2.2,
             connected: false, level: 7
         },
         {
             name: 'Medium Lake',
             kind: 'medium',
             x: N * 0.40, z: N * 0.50,
-            rx: 10.5, rz: 9.5, warp: 3.0,
+            rx: 10.5, rz: 9.5, warp: 4.5,
             connected: true, level: 8,
             riverPath: [
                 { x: N * 0.40, z: N * 0.50 },
@@ -289,7 +287,7 @@ function createWorldFeatures() {
             name: 'Large Lake',
             kind: 'large',
             x: N * 0.20, z: N * 0.80,
-            rx: 25, rz: 23, warp: 5.5,
+            rx: 25, rz: 23, warp: 9,
             connected: true, level: 8,
             riverPath: [
                 { x: N * 0.20, z: N * 0.80 },
@@ -300,31 +298,37 @@ function createWorldFeatures() {
         }
     ]
 
-    mountains = [
-        {
-            name: 'Wall',
-            x: N * 0.82, z: N * 0.20,
-            rx: 10.0, rz: 10.8, peak: 30,
-            slope: 0.78, warp: 1.8, roughness: 0.06
-        },
-        {
-            name: 'Great Mountain',
-            x: N * 0.59, z: N * 0.38,
-            rx: 21, rz: 23, peak: 39,
-            slope: 0.68, warp: 5.5, roughness: 0.10
-        }
-    ]
+    // Mountains are intentionally rare: about 10% of seeds get the Great Mountain,
+    // and about 5% get the smaller Wall. Most worlds have no major mountain.
+    const mountainRoll = rand(653, 659)
+    mountains = []
 
-    // Hills have steeper grassy sides than the low, flatter plains.
+    if (mountainRoll < 0.10) {
+        mountains.push({
+            name: 'Great Mountain',
+            x: N * 0.52, z: N * 0.44,
+            rx: 38, rz: 41, peak: 48,
+            slope: 0.50, warp: 19, roughness: 0.20
+        })
+    } else if (mountainRoll < 0.15) {
+        mountains.push({
+            name: 'Wall',
+            x: N * 0.85, z: N * 0.17,
+            rx: 17, rz: 18, peak: 32,
+            slope: 0.62, warp: 12, roughness: 0.22
+        })
+    }
+
+    // Hills are separate, steeper grassy rises. Plains stay broad and low.
     hillFeatures = [
-        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 9, rz: 12, peak: 7, slope: 1.55, warp: 2.5 },
-        { name: 'Southwest Hills', x: N * 0.23, z: N * 0.79, rx: 9, rz: 8, peak: 6, slope: 1.45, warp: 2.3 },
-        { name: 'Southeast Hills', x: N * 0.83, z: N * 0.81, rx: 8, rz: 7, peak: 5, slope: 1.5, warp: 2.0 }
+        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 13, rz: 15, peak: 8, slope: 1.6, warp: 7 },
+        { name: 'Southwest Hills', x: N * 0.24, z: N * 0.79, rx: 13, rz: 11, peak: 7, slope: 1.55, warp: 6 },
+        { name: 'Southeast Hills', x: N * 0.83, z: N * 0.81, rx: 11, rz: 10, peak: 6, slope: 1.6, warp: 5 }
     ]
 
     plains = [
-        { x: N * 0.60, z: N * 0.53, rx: 12, rz: 10 },
-        { x: N * 0.15, z: N * 0.80, rx: 10, rz: 8 }
+        { x: N * 0.60, z: N * 0.53, rx: 18, rz: 15 },
+        { x: N * 0.15, z: N * 0.80, rx: 15, rz: 12 }
     ]
 }
 
@@ -346,29 +350,35 @@ function plainsInfluence(x, z) {
 // Warp and perturb ellipse distance so shorelines and mountain footprints have
 // uneven coves, lobes, shoulders, and ridges instead of smooth oval outlines.
 function irregularDistance(x, z, feature) {
+    // Low-frequency domain warping breaks the oval silhouette; medium and fine
+    // contour noise adds headlands, narrow bays, ridges, and asymmetric shoulders.
     const warp = feature.warp || 0
-    const warpX = (noise(
-        x * 0.047 + feature.x * 0.13,
-        z * 0.047 + feature.z * 0.13
-    ) - 0.5) * warp
-    const warpZ = (noise(
-        x * 0.047 + feature.z * 0.13 + 19.7,
-        z * 0.047 + feature.x * 0.13 + 41.3
-    ) - 0.5) * warp
+    const warpX =
+        (noise(x * 0.026 + feature.x * 0.13, z * 0.026 + feature.z * 0.13) - 0.5) * warp +
+        (noise(x * 0.083 + feature.x * 0.21 + 7.1, z * 0.083 + feature.z * 0.21 + 2.7) - 0.5) * warp * 0.24
+    const warpZ =
+        (noise(x * 0.026 + feature.z * 0.13 + 19.7, z * 0.026 + feature.x * 0.13 + 41.3) - 0.5) * warp +
+        (noise(x * 0.083 + feature.z * 0.21 + 13.3, z * 0.083 + feature.x * 0.21 + 5.9) - 0.5) * warp * 0.24
+
     const dx = (x + warpX - feature.x) / feature.rx
     const dz = (z + warpZ - feature.z) / feature.rz
     const distance = Math.sqrt(dx * dx + dz * dz)
     const angle = Math.atan2(dz, dx)
-    const lobes =
-        Math.sin(angle * 3 + feature.x * 0.07) * 0.045 +
-        Math.sin(angle * 5 + feature.z * 0.09) * 0.026 +
-        Math.sin(angle * 7 + (feature.x + feature.z) * 0.04) * 0.012
-    const broadNoise =
-        (noise(x * 0.085 + feature.x * 0.17, z * 0.085 + feature.z * 0.17) - 0.5) * 0.10
-    const fineNoise =
-        (noise(x * 0.21 + feature.z * 0.09, z * 0.21 + feature.x * 0.09) - 0.5) * 0.045
 
-    return distance + lobes + broadNoise + fineNoise
+    // Stronger uneven lobes instead of the previous near-elliptical outline.
+    const angularRidges =
+        Math.sin(angle * 2 + feature.x * 0.07) * 0.085 +
+        Math.sin(angle * 3 + feature.z * 0.09) * 0.060 +
+        Math.sin(angle * 5 + (feature.x + feature.z) * 0.04) * 0.040 +
+        Math.sin(angle * 9 + feature.x * 0.11) * 0.022
+    const broadNoise =
+        (noise(x * 0.034 + feature.x * 0.17, z * 0.034 + feature.z * 0.17) - 0.5) * 0.34
+    const mediumNoise =
+        (noise(x * 0.095 + feature.z * 0.09 + 31.1, z * 0.095 + feature.x * 0.09 + 14.7) - 0.5) * 0.17
+    const fineNoise =
+        (noise(x * 0.24 + feature.z * 0.09, z * 0.24 + feature.x * 0.09) - 0.5) * 0.075
+
+    return distance + angularRidges + broadNoise + mediumNoise + fineNoise
 }
 
 function islandInfluenceAt(x, z) {
@@ -902,15 +912,25 @@ function buildChunk(cx, cz) {
     const x0 = cx * CS, z0 = cz * CS
     const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
 
+    // Use the highest actually occupied voxel in this chunk, not height + 6.
+    // Tree canopies from a higher neighboring column may overhang into a lower
+    // chunk; height-based clipping creates flat, visible chunk-face cuts.
     let maxY = 0
-    for (let z = z0; z < z1; z++) {
-        for (let x = x0; x < x1; x++) {
-            const col = ci(x, z)
-            maxY = Math.max(maxY, heights[col] + 6)
-            if (waterLevels[col] !== EMPTY) maxY = Math.max(maxY, waterLevels[col])
+    for (let y = H - 1; y >= 0; y--) {
+        let occupied = false
+        for (let z = z0; z < z1 && !occupied; z++) {
+            for (let x = x0; x < x1; x++) {
+                if (get(x, y, z) !== EMPTY) {
+                    occupied = true
+                    break
+                }
+            }
+        }
+        if (occupied) {
+            maxY = y
+            break
         }
     }
-    maxY = Math.min(H - 1, maxY)
 
     for (let y = 0; y <= maxY; y++) {
         for (let z = z0; z < z1; z++) {
@@ -919,12 +939,10 @@ function buildChunk(cx, cz) {
                 if (type === EMPTY) continue
 
                 for (const f of faces) {
-                    const neighbor = get(
-                        x + f.d[0], y + f.d[1], z + f.d[2]
-                    )
-
-                    if (neighbor !== EMPTY &&
-                        !(type !== WATER && neighbor === WATER)) continue
+                    // Query the full voxel map even at chunk boundaries so shared
+                    // faces between adjacent chunks are never emitted twice.
+                    const neighbor = get(x + f.d[0], y + f.d[1], z + f.d[2])
+                    if (neighbor !== EMPTY && (neighbor !== WATER || type === WATER)) continue
 
                     const g = groups[type]
                     const b = g.p.length / 3
@@ -934,11 +952,7 @@ function buildChunk(cx, cz) {
                         g.p.push(x + v[0], y + v[1], z + v[2])
                         g.n.push(...f.d)
                         g.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
-                        if (type === LEAVES) {
-                            // Alpha is intentionally fully opaque; underwater
-                            // foliage must not blend through water or itself.
-                            g.c.push(1, 1, 1, 1)
-                        }
+                        if (type === LEAVES) g.c.push(1, 1, 1, 1)
                     }
 
                     g.i.push(b, b + 1, b + 2, b, b + 2, b + 3)
@@ -951,11 +965,8 @@ function buildChunk(cx, cz) {
         const g = groups[t]
         if (!g.p.length) continue
 
-        const mesh = new BABYLON.Mesh(
-            'chunk_' + cx + '_' + cz + '_' + t, scene
-        )
+        const mesh = new BABYLON.Mesh('chunk_' + cx + '_' + cz + '_' + t, scene)
         const vd = new BABYLON.VertexData()
-
         vd.positions = g.p
         vd.normals = g.n
         vd.uvs = g.u
