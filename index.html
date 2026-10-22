@@ -371,6 +371,46 @@ function irregularDistance(x, z, feature) {
     return distance + lobes + broadNoise + fineNoise
 }
 
+function islandInfluenceAt(x, z) {
+    let influence = 0
+
+    for (const island of islands) {
+        const distance = irregularDistance(x, z, island)
+        const t = clamp((1.20 - distance) / 0.72, 0, 1)
+        const smooth = t * t * (3 - 2 * t)
+        influence = Math.max(influence, smooth)
+    }
+
+    return influence
+}
+
+function islandRiseAt(x, z) {
+    let rise = 0
+
+    for (const island of islands) {
+        const distance = irregularDistance(x, z, island)
+        const t = clamp((1.20 - distance) / 0.72, 0, 1)
+        const smooth = t * t * (3 - 2 * t)
+        rise = Math.max(rise, Math.pow(smooth, 0.78) * island.peak)
+    }
+
+    return rise
+}
+
+function hillRiseAt(x, z) {
+    const landMask = islandInfluenceAt(x, z)
+    if (landMask <= 0) return 0
+
+    let rise = 0
+    for (const hill of hillFeatures) {
+        const distance = irregularDistance(x, z, hill)
+        const weight = clamp(1 - distance / 1.12, 0, 1)
+        rise = Math.max(rise, Math.pow(weight, hill.slope || 1.5) * hill.peak)
+    }
+
+    return rise * clamp(landMask * 1.4, 0, 1)
+}
+
 function mountainRiseAt(x, z) {
     const landMask = islandInfluenceAt(x, z)
     if (landMask <= 0) return 0
