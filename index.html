@@ -112,7 +112,7 @@ scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
 scene.collisionsEnabled = false
 
 // A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
-const N = 192, H = 80, CS = 16, YOFF = -5
+const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5
 const MCOUNT = 6
 
@@ -253,14 +253,14 @@ function noise(x, z) {
 function createWorldFeatures() {
     oceans = [{ name: 'Ocean', level: 8 }]
 
-    // Six larger, deliberately irregular landmasses with coastlines kept inside the map.
+    // A 16x16 chunk archipelago: broad islands with irregular shelves and coastlines.
     islands = [
-        { name: 'Main Island', x: N * 0.58, z: N * 0.36, rx: 46, rz: 44, peak: 19, warp: 14, edgeScale: 0.85 },
-        { name: 'Southwest Island', x: N * 0.31, z: N * 0.72, rx: 46, rz: 36, peak: 17, warp: 10, edgeScale: 0.70 },
-        { name: 'Northwest Island', x: N * 0.18, z: N * 0.18, rx: 24, rz: 21, peak: 13, warp: 6, edgeScale: 0.80 },
-        { name: 'Northeast Island', x: N * 0.79, z: N * 0.19, rx: 27, rz: 22, peak: 14, warp: 8, edgeScale: 0.80 },
-        { name: 'Southeast Island', x: N * 0.77, z: N * 0.77, rx: 29, rz: 25, peak: 15, warp: 7, edgeScale: 0.80 },
-        { name: 'North Shoal', x: N * 0.43, z: N * 0.17, rx: 17, rz: 14, peak: 11, warp: 5, edgeScale: 0.75 }
+        { name: 'Main Island', x: N * 0.58, z: N * 0.36, rx: 60, rz: 57, peak: 22, warp: 17, edgeScale: 0.85 },
+        { name: 'Southwest Island', x: N * 0.34, z: N * 0.70, rx: 58, rz: 48, peak: 20, warp: 13, edgeScale: 0.70 },
+        { name: 'Northwest Island', x: N * 0.18, z: N * 0.18, rx: 31, rz: 28, peak: 15, warp: 8, edgeScale: 0.80 },
+        { name: 'Northeast Island', x: N * 0.79, z: N * 0.19, rx: 35, rz: 29, peak: 16, warp: 10, edgeScale: 0.80 },
+        { name: 'Southeast Island', x: N * 0.77, z: N * 0.77, rx: 38, rz: 33, peak: 17, warp: 9, edgeScale: 0.80 },
+        { name: 'North Shoal', x: N * 0.43, z: N * 0.17, rx: 22, rz: 18, peak: 13, warp: 6, edgeScale: 0.75 }
     ]
 
     ponds = [
@@ -268,14 +268,14 @@ function createWorldFeatures() {
             name: 'Small Pond',
             kind: 'small',
             x: N * 0.57, z: N * 0.47,
-            rx: 4.6, rz: 3.8, warp: 2.2,
+            rx: 6, rz: 5, warp: 2.8,
             connected: false, level: 7
         },
         {
             name: 'Medium Lake',
             kind: 'medium',
             x: N * 0.40, z: N * 0.50,
-            rx: 10.5, rz: 9.5, warp: 4.5,
+            rx: 13.5, rz: 12, warp: 5.5,
             connected: true, level: 8,
             riverPath: [
                 { x: N * 0.40, z: N * 0.50 },
@@ -288,7 +288,7 @@ function createWorldFeatures() {
             name: 'Large Lake',
             kind: 'large',
             x: N * 0.20, z: N * 0.80,
-            rx: 25, rz: 23, warp: 9,
+            rx: 32, rz: 30, warp: 12,
             connected: true, level: 8,
             riverPath: [
                 { x: N * 0.20, z: N * 0.80 },
@@ -299,7 +299,7 @@ function createWorldFeatures() {
         }
     ]
 
-    // Most world seeds have no major mountain. Great Mountain and Wall spawn rarely.
+    // Major mountains are very uncommon: about 10% Great Mountain, 5% Wall.
     const mountainRoll = rand(653, 659)
     mountains = []
 
@@ -307,27 +307,28 @@ function createWorldFeatures() {
         mountains.push({
             name: 'Great Mountain',
             x: N * 0.58, z: N * 0.36,
-            rx: 38, rz: 41, peak: 48,
-            slope: 0.50, warp: 19, edgeScale: 1.15, roughness: 0.20
+            rx: 50, rz: 53, peak: 55,
+            slope: 0.42, warp: 25, edgeScale: 1.20, roughness: 0.22
         })
     } else if (mountainRoll < 0.15) {
         mountains.push({
             name: 'Wall',
             x: N * 0.79, z: N * 0.19,
-            rx: 17, rz: 18, peak: 32,
-            slope: 0.62, warp: 12, edgeScale: 1.15, roughness: 0.22
+            rx: 22, rz: 23, peak: 36,
+            slope: 0.62, warp: 16, edgeScale: 1.15, roughness: 0.24
         })
     }
 
+    // Grassy rises and flatter plains scale with the expanded landmasses.
     hillFeatures = [
-        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 13, rz: 15, peak: 8, slope: 1.6, warp: 7, edgeScale: 1.15 },
-        { name: 'Southwest Hills', x: N * 0.24, z: N * 0.79, rx: 13, rz: 11, peak: 7, slope: 1.55, warp: 6, edgeScale: 1.15 },
-        { name: 'Southeast Hills', x: N * 0.75, z: N * 0.77, rx: 11, rz: 10, peak: 6, slope: 1.6, warp: 5, edgeScale: 1.15 }
+        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 17, rz: 20, peak: 9, slope: 1.6, warp: 9, edgeScale: 1.15 },
+        { name: 'Southwest Hills', x: N * 0.36, z: N * 0.70, rx: 17, rz: 14, peak: 8, slope: 1.55, warp: 8, edgeScale: 1.15 },
+        { name: 'Southeast Hills', x: N * 0.75, z: N * 0.77, rx: 14, rz: 13, peak: 7, slope: 1.6, warp: 7, edgeScale: 1.15 }
     ]
 
     plains = [
-        { x: N * 0.60, z: N * 0.46, rx: 18, rz: 15 },
-        { x: N * 0.26, z: N * 0.70, rx: 15, rz: 12 }
+        { x: N * 0.60, z: N * 0.46, rx: 23, rz: 19 },
+        { x: N * 0.35, z: N * 0.68, rx: 20, rz: 16 }
     ]
 }
 
@@ -584,15 +585,21 @@ function createRiverChannels() {
 
 function voxelize() {
     voxels.fill(EMPTY)
+    // Stone starts around the upper half of a mountain's rise. This leaves
+    // foothills and lower slopes grassy, while peaks naturally transition to stone.
+    const mountainStoneThreshold = mountains.length
+        ? Math.max(...mountains.map(m => m.peak)) * 0.58
+        : Infinity
 
     for (let x = 0; x < N; x++) {
         for (let z = 0; z < N; z++) {
             const h = heights[ci(x, z)]
             const wet = waterLevels[ci(x, z)] !== EMPTY && h < waterLevels[ci(x, z)]
 
+            const stoneMountainTop = mountainRiseAt(x, z) >= mountainStoneThreshold
             for (let y = 0; y <= h; y++) {
                 set(x, y, z,
-                    y === h ? (wet ? DIRT : (mountainRiseAt(x, z) >= 10 ? STONE : GRASS)) :
+                    y === h ? (wet ? DIRT : (stoneMountainTop ? STONE : GRASS)) :
                     y >= h - 3 ? DIRT : STONE
                 )
             }
