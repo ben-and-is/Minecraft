@@ -559,8 +559,8 @@ function createRiverChannels() {
                             )
                             const smooth = bankT * bankT * (3 - 2 * bankT)
                             const target = Math.round(
-                                (seaLevel + 1) +
-                                (originalHeight - (seaLevel + 1)) * smooth
+                                seaLevel +
+                                (originalHeight - seaLevel) * smooth
                             )
                             heights[col] = Math.max(
                                 seaLevel,
