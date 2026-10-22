@@ -253,14 +253,14 @@ function noise(x, z) {
 function createWorldFeatures() {
     oceans = [{ name: 'Ocean', level: 8 }]
 
-    // Enlarged, irregular island chain with enough separation to keep multiple islands.
+    // Six larger, deliberately irregular landmasses with coastlines kept inside the map.
     islands = [
-        { name: 'Main Island', x: N * 0.52, z: N * 0.45, rx: 48, rz: 45, peak: 19, warp: 22 },
-        { name: 'Southwest Island', x: N * 0.22, z: N * 0.82, rx: 43, rz: 39, peak: 17, warp: 22 },
-        { name: 'Northwest Island', x: N * 0.16, z: N * 0.15, rx: 24, rz: 21, peak: 13, warp: 13 },
-        { name: 'Northeast Island', x: N * 0.85, z: N * 0.17, rx: 27, rz: 23, peak: 14, warp: 15 },
-        { name: 'Southeast Island', x: N * 0.85, z: N * 0.82, rx: 31, rz: 27, peak: 15, warp: 17 },
-        { name: 'North Shoal', x: N * 0.50, z: N * 0.09, rx: 17, rz: 14, peak: 11, warp: 9 }
+        { name: 'Main Island', x: N * 0.58, z: N * 0.36, rx: 46, rz: 44, peak: 19, warp: 14, edgeScale: 0.85 },
+        { name: 'Southwest Island', x: N * 0.31, z: N * 0.72, rx: 46, rz: 36, peak: 17, warp: 10, edgeScale: 0.70 },
+        { name: 'Northwest Island', x: N * 0.18, z: N * 0.18, rx: 24, rz: 21, peak: 13, warp: 6, edgeScale: 0.80 },
+        { name: 'Northeast Island', x: N * 0.79, z: N * 0.19, rx: 27, rz: 22, peak: 14, warp: 8, edgeScale: 0.80 },
+        { name: 'Southeast Island', x: N * 0.77, z: N * 0.77, rx: 29, rz: 25, peak: 15, warp: 7, edgeScale: 0.80 },
+        { name: 'North Shoal', x: N * 0.43, z: N * 0.17, rx: 17, rz: 14, peak: 11, warp: 5, edgeScale: 0.75 }
     ]
 
     ponds = [
@@ -280,7 +280,8 @@ function createWorldFeatures() {
             riverPath: [
                 { x: N * 0.40, z: N * 0.50 },
                 { x: N * 0.35, z: N * 0.51 },
-                { x: N * 0.31, z: N * 0.50 }
+                { x: N * 0.31, z: N * 0.50 },
+                { x: N * 0.28, z: N * 0.50 }
             ]
         },
         {
@@ -291,44 +292,42 @@ function createWorldFeatures() {
             connected: true, level: 8,
             riverPath: [
                 { x: N * 0.20, z: N * 0.80 },
-                { x: N * 0.27, z: N * 0.81 },
-                { x: N * 0.33, z: N * 0.83 },
-                { x: N * 0.38, z: N * 0.84 }
+                { x: N * 0.31, z: N * 0.81 },
+                { x: N * 0.43, z: N * 0.82 },
+                { x: N * 0.56, z: N * 0.81 }
             ]
         }
     ]
 
-    // Mountains are intentionally rare: about 10% of seeds get the Great Mountain,
-    // and about 5% get the smaller Wall. Most worlds have no major mountain.
+    // Most world seeds have no major mountain. Great Mountain and Wall spawn rarely.
     const mountainRoll = rand(653, 659)
     mountains = []
 
     if (mountainRoll < 0.10) {
         mountains.push({
             name: 'Great Mountain',
-            x: N * 0.52, z: N * 0.44,
+            x: N * 0.58, z: N * 0.36,
             rx: 38, rz: 41, peak: 48,
-            slope: 0.50, warp: 19, roughness: 0.20
+            slope: 0.50, warp: 19, edgeScale: 1.15, roughness: 0.20
         })
     } else if (mountainRoll < 0.15) {
         mountains.push({
             name: 'Wall',
-            x: N * 0.85, z: N * 0.17,
+            x: N * 0.79, z: N * 0.19,
             rx: 17, rz: 18, peak: 32,
-            slope: 0.62, warp: 12, roughness: 0.22
+            slope: 0.62, warp: 12, edgeScale: 1.15, roughness: 0.22
         })
     }
 
-    // Hills are separate, steeper grassy rises. Plains stay broad and low.
     hillFeatures = [
-        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 13, rz: 15, peak: 8, slope: 1.6, warp: 7 },
-        { name: 'Southwest Hills', x: N * 0.24, z: N * 0.79, rx: 13, rz: 11, peak: 7, slope: 1.55, warp: 6 },
-        { name: 'Southeast Hills', x: N * 0.83, z: N * 0.81, rx: 11, rz: 10, peak: 6, slope: 1.6, warp: 5 }
+        { name: 'Main Island Hills', x: N * 0.39, z: N * 0.53, rx: 13, rz: 15, peak: 8, slope: 1.6, warp: 7, edgeScale: 1.15 },
+        { name: 'Southwest Hills', x: N * 0.24, z: N * 0.79, rx: 13, rz: 11, peak: 7, slope: 1.55, warp: 6, edgeScale: 1.15 },
+        { name: 'Southeast Hills', x: N * 0.75, z: N * 0.77, rx: 11, rz: 10, peak: 6, slope: 1.6, warp: 5, edgeScale: 1.15 }
     ]
 
     plains = [
-        { x: N * 0.60, z: N * 0.53, rx: 18, rz: 15 },
-        { x: N * 0.15, z: N * 0.80, rx: 15, rz: 12 }
+        { x: N * 0.60, z: N * 0.46, rx: 18, rz: 15 },
+        { x: N * 0.26, z: N * 0.70, rx: 15, rz: 12 }
     ]
 }
 
@@ -350,8 +349,8 @@ function plainsInfluence(x, z) {
 // Warp and perturb ellipse distance so shorelines and mountain footprints have
 // uneven coves, lobes, shoulders, and ridges instead of smooth oval outlines.
 function irregularDistance(x, z, feature) {
-    // Low-frequency domain warping breaks the oval silhouette; medium and fine
-    // contour noise adds headlands, narrow bays, ridges, and asymmetric shoulders.
+    // Multi-scale warping makes silhouettes asymmetric and craggy without letting
+    // the largest islands spill off the edge of the map.
     const warp = feature.warp || 0
     const warpX =
         (noise(x * 0.026 + feature.x * 0.13, z * 0.026 + feature.z * 0.13) - 0.5) * warp +
@@ -364,8 +363,6 @@ function irregularDistance(x, z, feature) {
     const dz = (z + warpZ - feature.z) / feature.rz
     const distance = Math.sqrt(dx * dx + dz * dz)
     const angle = Math.atan2(dz, dx)
-
-    // Stronger uneven lobes instead of the previous near-elliptical outline.
     const angularRidges =
         Math.sin(angle * 2 + feature.x * 0.07) * 0.085 +
         Math.sin(angle * 3 + feature.z * 0.09) * 0.060 +
@@ -377,8 +374,9 @@ function irregularDistance(x, z, feature) {
         (noise(x * 0.095 + feature.z * 0.09 + 31.1, z * 0.095 + feature.x * 0.09 + 14.7) - 0.5) * 0.17
     const fineNoise =
         (noise(x * 0.24 + feature.z * 0.09, z * 0.24 + feature.x * 0.09) - 0.5) * 0.075
+    const edgeScale = feature.edgeScale ?? 1
 
-    return distance + angularRidges + broadNoise + mediumNoise + fineNoise
+    return distance + (angularRidges + broadNoise + mediumNoise + fineNoise) * edgeScale
 }
 
 function islandInfluenceAt(x, z) {
