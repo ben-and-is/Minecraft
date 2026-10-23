@@ -183,6 +183,7 @@ const heights = new Int16Array(N * N)
 const waterLevels = new Int8Array(N * N)
 let meshes = []
 let chunkMeshes = new Map()
+let desiredChunkKeys = new Set()
 let decorationBuffersByChunk = new Map()
 let lastChunkCenterX = -1
 let lastChunkCenterZ = -1
@@ -1186,7 +1187,6 @@ function addGroundDecorations() {
 
             const groundY = heights[col]
             if (get(x, groundY, z) !== GRASS || get(x, groundY + 1, z) !== EMPTY) continue
-            if (desertInfluenceAt(x, z) > 0.38) continue
             useBuffersForColumn(x, z)
 
             const roll = rand(x + 307, z + 811)
@@ -1281,8 +1281,20 @@ function buildChunk(cx, cz) {
                 const type = get(x, y, z)
                 if (type === EMPTY) continue
                 for (const face of faces) {
-                    const neighbor = get(x + face.d[0], y + face.d[1], z + face.d[2])
-                    // Cross-chunk neighbors are checked against the complete voxel map.
+                    const neighborX = x + face.d[0]
+                    const neighborZ = z + face.d[2]
+                    let neighbor = get(neighborX, y + face.d[1], neighborZ)
+
+                    // Adjacent visible chunks suppress shared faces. At the outer
+                    // edge of the 4-chunk view, expose the boundary face so a block
+                    // isn't clipped just because its neighbor chunk is not loaded.
+                    const neighborChunkX = Math.floor(neighborX / CS)
+                    const neighborChunkZ = Math.floor(neighborZ / CS)
+                    const crossesChunk = neighborChunkX !== cx || neighborChunkZ !== cz
+                    const neighborKey = neighborChunkX + ',' + neighborChunkZ
+                    if (crossesChunk && !desiredChunkKeys.has(neighborKey)) {
+                        neighbor = EMPTY
+                    }
                     if (neighbor !== EMPTY && (neighbor !== WATER || type === WATER)) continue
                     const group = groups[type]
                     const base = group.p.length / 3
@@ -1342,6 +1354,7 @@ function updateChunkLoading(force = false) {
     wanted.sort((a, b) => a.distance - b.distance)
     const limited = wanted.slice(0, MAX_LOADED_CHUNKS)
     const wantedKeys = new Set(limited.map(chunk => chunk.key))
+    desiredChunkKeys = wantedKeys
 
     for (const key of Array.from(chunkMeshes.keys())) {
         if (!wantedKeys.has(key)) unloadChunk(key)
@@ -1673,6 +1686,7 @@ function generate() {
     for (const m of meshes) m.dispose()
     meshes = []
     chunkMeshes.clear()
+    desiredChunkKeys = new Set()
     decorationBuffersByChunk = new Map()
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
