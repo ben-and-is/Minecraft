@@ -154,9 +154,9 @@ const materials = colors.map((color, i) => {
         // Freshwater is a distinct light blue and transmits more light.
         // Saltwater stays darker and more opaque to avoid an X-ray appearance.
         m.diffuseColor = i === FRESH_WATER
-            ? new BABYLON.Color3(.26, .55, .80)
-            : new BABYLON.Color3(.045, .15, .32)
-        m.alpha = i === FRESH_WATER ? .56 : .93
+            ? new BABYLON.Color3(.075, .20, .34)
+            : new BABYLON.Color3(.008, .025, .070)
+        m.alpha = i === FRESH_WATER ? .88 : .97
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES || i === PALM_LEAVES || i === DARK_LEAVES) {
@@ -230,6 +230,9 @@ const EPS = .0001
 
 let feetY = 10
 let verticalVelocity = 0
+let cameraEyeHeight = EYE_HEIGHT
+let horizontalVelocityX = 0
+let horizontalVelocityZ = 0
 let waterDiveTargetDepth = 0
 let waterMotionSpeed = 0
 let grounded = false
@@ -479,7 +482,7 @@ function createWorldFeatures() {
             roughness: 0.18 + rand(1561, 1567) * 0.18,
             cliffAngle: rand(1569, 1571) * Math.PI * 2,
             caveCount: 3 + Math.floor(rand(1573, 1577) * 5),
-            ridgeAmp: scale(1581, 5, 0.65)
+            ridgeAmp: scale(1581, 7.2, 0.65)
         })
     } else if (mountainRoll < 0.065) {
         const host = chooseHostIsland(1583)
@@ -518,9 +521,9 @@ function createWorldFeatures() {
     }
 
     hillFeatures = [
-        { name: 'Main Island Hills', x: N * vary(1657, 0.39, 0.12), z: N * vary(1663, 0.53, 0.12), rx: scale(1667, 17, 0.30), rz: scale(1669, 20, 0.30), peak: scale(1693, 9, 0.35), slope: vary(1697, 1.6, 0.26), warp: scale(1699, 9, 0.65), edgeScale: vary(1709, 1.15, 0.30) },
-        { name: 'Southwest Hills', x: N * vary(1721, 0.36, 0.10), z: N * vary(1723, 0.70, 0.10), rx: scale(1727, 17, 0.30), rz: scale(1733, 14, 0.30), peak: scale(1741, 8, 0.35), slope: vary(1747, 1.55, 0.26), warp: scale(1753, 8, 0.65), edgeScale: vary(1759, 1.15, 0.30) },
-        { name: 'Southeast Hills', x: N * vary(1769, 0.75, 0.10), z: N * vary(1777, 0.77, 0.10), rx: scale(1783, 14, 0.30), rz: scale(1787, 13, 0.30), peak: scale(1789, 7, 0.35), slope: vary(1801, 1.6, 0.26), warp: scale(811, 7, 0.65), edgeScale: vary(821, 1.15, 0.30) }
+        { name: 'Main Island Hills', x: N * vary(1657, 0.39, 0.12), z: N * vary(1663, 0.53, 0.12), rx: scale(1667, 25, 0.30), rz: scale(1669, 28, 0.30), peak: scale(1693, 14, 0.35), slope: vary(1697, 1.30, 0.22), warp: scale(1699, 11, 0.55), edgeScale: vary(1709, 1.08, 0.25) },
+        { name: 'Southwest Hills', x: N * vary(1721, 0.36, 0.10), z: N * vary(1723, 0.70, 0.10), rx: scale(1727, 26, 0.30), rz: scale(1733, 22, 0.30), peak: scale(1741, 13, 0.35), slope: vary(1747, 1.30, 0.22), warp: scale(1753, 10, 0.55), edgeScale: vary(1759, 1.08, 0.25) },
+        { name: 'Southeast Hills', x: N * vary(1769, 0.75, 0.10), z: N * vary(1777, 0.77, 0.10), rx: scale(1783, 21, 0.30), rz: scale(1787, 20, 0.30), peak: scale(1789, 12, 0.35), slope: vary(1801, 1.30, 0.22), warp: scale(811, 9, 0.55), edgeScale: vary(821, 1.08, 0.25) }
     ]
 
     plains = [
@@ -784,16 +787,21 @@ function mountainRiseAt(x, z) {
                 0.84 +
                 (noise(x * 0.071 + m.x, z * 0.071 + m.z) - 0.5) * 0.20 +
                 (noise(x * 0.19 + m.z, z * 0.19 + m.x) - 0.5) * 0.08
-            const cliffFace = clamp((raggedLip - distance + 0.075) / 0.15, 0, 1)
+            const cliffFace = clamp((raggedLip - distance + 0.095) / 0.12, 0, 1)
             const unevenTop = clamp(
                 1 + (noise(x * 0.065 + m.x, z * 0.065 + m.z) - 0.5) * 0.22 +
                 (noise(x * 0.15 + m.z, z * 0.15 + m.x) - 0.5) * 0.10,
                 0.72, 1.18
             )
+            const ledgeBand = Math.sin(distance * 31 +
+                noise(x * 0.16 + m.x, z * 0.16 + m.z) * 3.0) * faceAlignment * 0.055
+            const rockySpur = Math.max(0, Math.sin(angle * 5 +
+                noise(x * 0.12 + m.z, z * 0.12 + m.x) * 4.0)) *
+                faceAlignment * Math.pow(weight, 1.15) * 0.13
             profile = (
                 baseProfile * (1 - faceAlignment) +
-                (baseProfile * 0.18 + cliffFace * 0.82) * faceAlignment
-            ) * unevenTop
+                (baseProfile * 0.09 + cliffFace * 0.91) * faceAlignment
+            ) * unevenTop + ledgeBand + rockySpur
         }
 
         const broadRidge = (noise(
@@ -832,6 +840,14 @@ function terrainHeight(x, z) {
     }
 
     height += hillRiseAt(x, z)
+
+    // Broad low-frequency uplift gives some islands higher rolling country
+    // without adding steep mountain-like slopes.
+    const uplandNoise = noise(x * 0.016 + seed * 0.014 + 43,
+        z * 0.016 - seed * 0.012 + 71)
+    const uplandAmount = Math.pow(clamp((uplandNoise - 0.47) * 1.9, 0, 1), 1.25)
+    height += uplandAmount * 6.5 * islandMask * (1 - flatness * 0.55)
+
     height += mountainRiseAt(x, z)
 
     // Blend desert land toward low-relief sandy plains while retaining a little
@@ -897,9 +913,58 @@ function createPonds() {
     const seaLevel = oceans[0].level
 
     for (const pond of ponds) {
-        pond.level = pond.connected
-            ? seaLevel
-            : clamp(Math.round(pond.level ?? seaLevel - 2), 3, H - 12)
+        pond.disabled = false
+        if (pond.connected) {
+            pond.level = seaLevel
+        } else {
+            const originalX = pond.x, originalZ = pond.z
+            const isHighland = pond.name === 'Highland Tarn'
+            const isLowBasin = pond.name === 'Low Basin'
+            const minimumLandHeight = seaLevel + (isHighland ? 9 : 4)
+            const searchRadius = Math.max(pond.rx, pond.rz) * 1.7 + 18
+            let best = null
+            let bestScore = Infinity
+            const minX = Math.max(2, Math.floor(originalX - searchRadius))
+            const maxX = Math.min(N - 3, Math.ceil(originalX + searchRadius))
+            const minZ = Math.max(2, Math.floor(originalZ - searchRadius))
+            const maxZ = Math.min(N - 3, Math.ceil(originalZ + searchRadius))
+
+            for (let x = minX; x <= maxX; x++) {
+                for (let z = minZ; z <= maxZ; z++) {
+                    const dx = x + 0.5 - originalX, dz = z + 0.5 - originalZ
+                    const distance = Math.hypot(dx, dz)
+                    if (distance > searchRadius) continue
+                    const col = ci(x, z)
+                    const landHeight = heights[col]
+                    if (landHeight < minimumLandHeight || islandInfluenceAt(x, z) < 0.52) continue
+
+                    const elevationPenalty = isHighland
+                        ? Math.max(0, seaLevel + 14 - landHeight) * 1.8
+                        : isLowBasin
+                            ? Math.max(0, landHeight - seaLevel - 22) * 0.18
+                            : Math.max(0, landHeight - seaLevel - 27) * 0.12
+                    const score = distance + elevationPenalty
+                    if (score < bestScore) {
+                        bestScore = score
+                        best = { x: x + 0.5, z: z + 0.5, landHeight }
+                    }
+                }
+            }
+
+            if (!best) {
+                pond.disabled = true
+                continue
+            }
+
+            pond.x = best.x
+            pond.z = best.z
+            const basinDepth = isHighland
+                ? 2 + Math.floor(rand(pond.x + 5557, pond.z + 5563) * 4)
+                : isLowBasin
+                    ? 7 + Math.floor(rand(pond.x + 5569, pond.z + 5573) * 7)
+                    : 3 + Math.floor(rand(pond.x + 5579, pond.z + 5581) * 8)
+            pond.level = clamp(Math.round(best.landHeight - basinDepth), 3, H - 12)
+        }
 
         const margin = (pond.warp || 0) + 3
         const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.55 - margin))
@@ -914,7 +979,6 @@ function createPonds() {
 
                 const col = ci(x, z)
                 const originalHeight = heights[col]
-
                 if (edge <= 1) {
                     const depth = pond.kind === 'large'
                         ? 1 + Math.floor(Math.max(0, 1 - edge) * 4)
@@ -923,14 +987,13 @@ function createPonds() {
                             : 1 + Math.floor(Math.max(0, 1 - edge) * 4)
                     heights[col] = Math.min(originalHeight, Math.max(1, pond.level - depth))
                     waterLevels[col] = pond.level
-                } else if (originalHeight > pond.level) {
-                    // Grade banks to each pond's own waterline for elevated and low basins.
+                } else if (originalHeight > seaLevel && originalHeight > pond.level) {
+                    // Maintain a dry raised rim even for low-level ponds, or global ocean
+                    // water would refill the basin to sea level.
                     const t = clamp((edge - 1) / 0.38, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
-                    const target = Math.round(
-                        pond.level + (originalHeight - pond.level) * smooth
-                    )
-                    heights[col] = Math.min(originalHeight, target)
+                    const target = Math.round(pond.level + (originalHeight - pond.level) * smooth)
+                    heights[col] = Math.max(seaLevel + 1, Math.min(originalHeight, target))
                 }
             }
         }
@@ -1004,6 +1067,7 @@ function isFreshWaterColumnAt(x, z) {
     const seaLevel = oceans.length ? oceans[0].level : 12
 
     for (const pond of ponds) {
+        if (pond.disabled) continue
         if (irregularDistance(x, z, pond) < 1.52) return true
         if (!pond.riverPath) continue
         for (let i = 0; i < pond.riverPath.length - 1; i++) {
@@ -1081,7 +1145,7 @@ function voxelize() {
 function addWaterfalls() {
     const seaLevel = oceans[0].level
     const elevatedPonds = ponds
-        .filter(pond => !pond.connected && pond.level >= seaLevel + 2)
+        .filter(pond => !pond.disabled && !pond.connected && pond.level >= seaLevel + 2)
         .sort((a, b) => b.level - a.level)
 
     // No high lake means no waterfall. Even with one, many worlds have no major fall.
@@ -2128,18 +2192,31 @@ function canOccupy(x, z, feet) {
     return !overlapsSolid(x, z, feet)
 }
 
+function findStepLanding(x, z, currentFeet, maximumFeet) {
+    const bx = Math.floor(x), bz = Math.floor(z)
+    if (bx < 1 || bx >= N - 1 || bz < 1 || bz >= N - 1) return null
+    const minY = Math.max(0, Math.floor(currentFeet - EPS))
+    const maxY = Math.min(H - 2, Math.floor(maximumFeet - EPS))
+    for (let y = maxY; y >= minY; y--) {
+        if (!isSolid(bx, y, bz)) continue
+        const landingFeet = y + 1
+        if (landingFeet > currentFeet + EPS && landingFeet <= maximumFeet + EPS) {
+            return landingFeet
+        }
+    }
+    return null
+}
+
 function startAutoStep(targetX, targetZ) {
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
-    // Water supports an assisted climb even when the player is buoyant rather
-    // than grounded. Allow one block above the waterline when exiting.
     const supported = inWater || grounded ||
         (verticalVelocity <= 0 && !canOccupy(playerX, playerZ, feetY - 0.06))
     if (autoStep || !supported || (!inWater && verticalVelocity > 0)) return false
 
-    const targetFeet = findGround(targetX, targetZ)
     const highestAllowedFeet = inWater ? waterSurface + 1.01 : feetY + 1.01
-    if (targetFeet <= feetY || targetFeet > highestAllowedFeet + EPS) return false
+    const targetFeet = findStepLanding(targetX, targetZ, feetY, highestAllowedFeet)
+    if (targetFeet === null || targetFeet <= feetY || targetFeet > highestAllowedFeet + EPS) return false
     if (!canOccupy(targetX, targetZ, targetFeet)) return false
 
     autoStep = {
@@ -2151,6 +2228,8 @@ function startAutoStep(targetX, targetZ) {
         targetZ,
         targetFeet
     }
+    horizontalVelocityX = 0
+    horizontalVelocityZ = 0
     verticalVelocity = 0
     grounded = false
     return true
@@ -2253,10 +2332,13 @@ function findGround(x, z) {
     return 10
 }
 
-function syncCamera() {
+function syncCamera(dt = 1 / 60) {
+    const targetEyeHeight = currentEyeHeight()
+    const blend = 1 - Math.exp(-Math.max(0, Math.min(dt, 0.1)) * 12)
+    cameraEyeHeight += (targetEyeHeight - cameraEyeHeight) * blend
     camera.position.set(
         playerX,
-        feetY + currentEyeHeight() + YOFF,
+        feetY + cameraEyeHeight + YOFF,
         playerZ
     )
     camera.rotation.set(pitch, yaw, 0)
@@ -2296,44 +2378,30 @@ function getWaterSurface() {
 
 function updateUnderwaterAtmosphere(dt = 1 / 60) {
     const skyFog = new BABYLON.Color3(.53, .81, .92)
-    const eyeY = feetY + currentEyeHeight()
+    const eyeY = feetY + cameraEyeHeight
     const bx = Math.floor(playerX), bz = Math.floor(playerZ), by = Math.floor(eyeY)
     let targetDensity = 0.012
     let targetColor = skyFog
 
-    if (bx >= 0 && bx < N && bz >= 0 && bz < N && by >= 0 && by < H) {
-        const type = get(bx, by, bz)
-        if (isWaterBlock(type)) {
-            const level = getWaterSurface() ?? (waterLevels[ci(bx, bz)] + 1)
-            const depth = Math.max(0, level - eyeY)
-            if (type === FRESH_WATER) {
-                const d = clamp(depth / 28, 0, 1)
-                targetDensity = 0.012 + Math.min(depth, 32) * 0.0010
-                targetColor = new BABYLON.Color3(
-                    0.42 * (1 - d) + 0.055 * d,
-                    0.67 * (1 - d) + 0.20 * d,
-                    0.82 * (1 - d) + 0.38 * d
-                )
-            } else {
-                const d = clamp(depth / 13, 0, 1)
-                targetDensity = 0.016 + Math.min(depth, 22) * 0.0048
-                targetColor = new BABYLON.Color3(
-                    0.24 * (1 - d) + 0.003 * d,
-                    0.36 * (1 - d) + 0.018 * d,
-                    0.50 * (1 - d) + 0.055 * d
-                )
-            }
-        }
+    if (bx >= 0 && bx < N && bz >= 0 && bz < N && by >= 0 && by < H &&
+        isWaterBlock(get(bx, by, bz))) {
+        const level = getWaterSurface() ?? (waterLevels[ci(bx, bz)] + 1)
+        const depth = Math.max(0, level - eyeY)
+        const d = clamp(depth / 12, 0, 1)
+        targetDensity = 0.025 + Math.min(depth, 24) * 0.006
+        targetColor = new BABYLON.Color3(
+            0.045 * (1 - d) + 0.003 * d,
+            0.13 * (1 - d) + 0.014 * d,
+            0.23 * (1 - d) + 0.045 * d
+        )
     }
 
-    // A smooth fade avoids sudden whole-scene flashes when crossing water types.
-    const blend = 1 - Math.exp(-Math.max(0, Math.min(dt, 0.1)) * 2.8)
+    // Blend over time when submerging or surfacing; no freshwater/saltwater toggle.
+    const blend = 1 - Math.exp(-Math.max(0, Math.min(dt, 0.1)) * 2.4)
     scene.fogDensity += (targetDensity - scene.fogDensity) * blend
     scene.fogColor.r += (targetColor.r - scene.fogColor.r) * blend
     scene.fogColor.g += (targetColor.g - scene.fogColor.g) * blend
     scene.fogColor.b += (targetColor.b - scene.fogColor.b) * blend
-
-    // Water type is handled by water materials and fog, not by global scene lights.
     hemi.intensity = 0.9
     sun.intensity = 0.5
 }
@@ -2352,16 +2420,24 @@ function updatePlayer(dt) {
         const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
         const flySpeed = (running ? RUN_SPEED : MOVE_SPEED) * 2
         if (horizontalLength > 0) {
-            mx /= horizontalLength; mz /= horizontalLength
+            mx /= horizontalLength
+            mz /= horizontalLength
             moveHorizontal(mx * flySpeed * dt, mz * flySpeed * dt)
         }
         const verticalInput = (keys.has('Space') ? 1 : 0) - (keys.has('KeyC') ? 1 : 0)
         if (verticalInput !== 0) moveVertical(verticalInput * flySpeed * dt)
-        grounded = false; verticalVelocity = 0; jumpQueued = false
-        syncCamera()
+        horizontalVelocityX = 0
+        horizontalVelocityZ = 0
+        grounded = false
+        verticalVelocity = 0
+        jumpQueued = false
+        syncCamera(dt)
         return
     }
-    if (advanceAutoStep(dt)) { syncCamera(); return }
+    if (advanceAutoStep(dt)) {
+        syncCamera(dt)
+        return
+    }
 
     const forward = new BABYLON.Vector3(Math.sin(yaw), 0, Math.cos(yaw))
     const right = new BABYLON.Vector3(Math.cos(yaw), 0, -Math.sin(yaw))
@@ -2374,40 +2450,65 @@ function updatePlayer(dt) {
     const len = Math.hypot(mx, mz)
     const waterBeforeMove = getWaterSurface() !== null
     const crouching = isCrouching()
-    let horizontalSpeed = 0
-    if (len > 0) {
-        mx /= len; mz /= len
-        const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
-        const requestedSpeed = running ? RUN_SPEED : MOVE_SPEED
-        const baseWaterSpeed = running ? MAX_WATER_HORIZONTAL_SPEED : WATER_MOVE_SPEED
-        const waterSpeed = baseWaterSpeed / (1 + waterMotionSpeed * WATER_HORIZONTAL_DRAG)
-        const movementSpeed = (waterBeforeMove ? waterSpeed : requestedSpeed) *
+    const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
+    const requestedSpeed = running ? RUN_SPEED : MOVE_SPEED
+    const waterBaseSpeed = running ? MAX_WATER_HORIZONTAL_SPEED : WATER_MOVE_SPEED
+    const waterRequestedSpeed = waterBaseSpeed / (1 + waterMotionSpeed * WATER_HORIZONTAL_DRAG)
+    const desiredSpeed = len > 0
+        ? (waterBeforeMove ? waterRequestedSpeed : requestedSpeed) *
             (crouching ? CROUCH_SPEED_MULTIPLIER : 1)
-        const previousX = playerX, previousZ = playerZ
-        moveHorizontal(mx * movementSpeed * dt, mz * movementSpeed * dt)
-        if (autoStep) { syncCamera(); return }
-        horizontalSpeed = Math.hypot(playerX - previousX, playerZ - previousZ) / Math.max(dt, EPS)
+        : 0
+    const desiredVX = len > 0 ? mx / len * desiredSpeed : 0
+    const desiredVZ = len > 0 ? mz / len * desiredSpeed : 0
+
+    // Movement velocity eases toward the requested speed; entering water/crouching
+    // slows the player by deceleration rather than a one-frame speed snap.
+    const responseRate = waterBeforeMove ? (len > 0 ? 3.5 : 2.2) : (len > 0 ? 11.0 : 13.0)
+    const velocityBlend = 1 - Math.exp(-responseRate * dt)
+    horizontalVelocityX += (desiredVX - horizontalVelocityX) * velocityBlend
+    horizontalVelocityZ += (desiredVZ - horizontalVelocityZ) * velocityBlend
+
+    const previousX = playerX, previousZ = playerZ
+    moveHorizontal(horizontalVelocityX * dt, horizontalVelocityZ * dt)
+    if (autoStep) {
+        horizontalVelocityX = 0
+        horizontalVelocityZ = 0
+        syncCamera(dt)
+        return
     }
+    const horizontalSpeed = Math.hypot(playerX - previousX, playerZ - previousZ) / Math.max(dt, EPS)
 
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
+
+    // Space has a queued press so landing on the ground reliably triggers a jump.
+    if (!inWater && !crouching && jumpQueued &&
+        (grounded || (verticalVelocity <= 0 && !canOccupy(playerX, playerZ, feetY - 0.06)))) {
+        verticalVelocity = JUMP_SPEED
+        grounded = false
+    }
+    jumpQueued = false
+
     if (inWater) {
-        if (len > 0) waterMotionSpeed = horizontalSpeed
-        else waterMotionSpeed *= Math.exp(-2.4 * dt)
-        if (crouching) waterDiveTargetDepth += 3.2 * dt
-        if (keys.has('Space')) waterDiveTargetDepth = Math.max(0, waterDiveTargetDepth - 3.8 * dt)
+        if (horizontalSpeed > 0.08) waterMotionSpeed = horizontalSpeed
+        else waterMotionSpeed *= Math.exp(-2.0 * dt)
+
+        if (crouching) waterDiveTargetDepth += 3.8 * dt
+        if (keys.has('Space')) waterDiveTargetDepth = Math.max(0, waterDiveTargetDepth - 5.0 * dt)
 
         const forwardInput = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)
         const lookVertical = -Math.sin(pitch)
         const swimVerticalInput = lookVertical * forwardInput +
             (keys.has('Space') ? 1.0 : 0) - (crouching ? 1.0 : 0)
+
         const velocityDiveDepth = Math.max(0, horizontalSpeed - WATER_DIVE_START_SPEED) * 0.9
         const floatFeet = waterSurface - EYE_HEIGHT + 0.05 +
             WATER_GRAVITY / WATER_BUOYANCY - waterDiveTargetDepth - velocityDiveDepth
+
         verticalVelocity -= WATER_GRAVITY * dt
         verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
         verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
-        if (crouching) verticalVelocity -= SWIM_ACCELERATION * 0.45 * dt
+        if (crouching) verticalVelocity -= SWIM_ACCELERATION * 0.8 * dt
         verticalVelocity *= Math.exp(-WATER_DRAG * dt)
         verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
         moveVertical(verticalVelocity * dt)
@@ -2417,12 +2518,13 @@ function updatePlayer(dt) {
         verticalVelocity = Math.max(-MAX_FALL_SPEED, verticalVelocity - GRAVITY * dt)
         const wasFalling = verticalVelocity <= 0
         moveVertical(verticalVelocity * dt)
-        if (wasFalling && !canOccupy(playerX, playerZ, feetY - .045)) {
+        if (wasFalling && !canOccupy(playerX, playerZ, feetY - 0.045)) {
             grounded = true
             verticalVelocity = 0
         }
     }
-    syncCamera()
+
+    syncCamera(dt)
 }
 
 function generate() {
@@ -2487,6 +2589,9 @@ function generate() {
     }
 
     verticalVelocity = 0
+    cameraEyeHeight = EYE_HEIGHT
+    horizontalVelocityX = 0
+    horizontalVelocityZ = 0
     waterDiveTargetDepth = 0
     waterMotionSpeed = 0
     grounded = true
