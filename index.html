@@ -109,12 +109,18 @@ const engine = new BABYLON.Engine(canvas, true)
 const scene = new BABYLON.Scene(engine)
 
 scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
+scene.fogMode = BABYLON.Scene.FOGMODE_EXP2
+scene.fogDensity = 0.012
+scene.fogColor = new BABYLON.Color3(.53, .81, .92)
 scene.collisionsEnabled = false
 
 // A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
 const N = 256, H = 96, CS = 16, YOFF = -5
-const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5
-const MCOUNT = 6
+const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6
+const MCOUNT = 7
+const MAX_LOADED_CHUNKS = 400
+const CHUNK_RENDER_RADIUS = 4
+const CHUNKS_PER_AXIS = Math.ceil(N / CS)
 
 const camera = new BABYLON.UniversalCamera(
     'cam', new BABYLON.Vector3(N / 2, 10, N / 2), scene
@@ -136,7 +142,7 @@ const sun = new BABYLON.DirectionalLight(
 )
 sun.intensity = .5
 
-const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0']
+const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0', '#d9c27a']
 const materials = colors.map((color, i) => {
     const m = new BABYLON.StandardMaterial('mat' + i, scene)
     m.diffuseColor = BABYLON.Color3.FromHexString(color)
@@ -176,11 +182,16 @@ const voxels = new Int8Array(N * N * H)
 const heights = new Int16Array(N * N)
 const waterLevels = new Int8Array(N * N)
 let meshes = []
+let chunkMeshes = new Map()
+let decorationBuffersByChunk = new Map()
+let lastChunkCenterX = -1
+let lastChunkCenterZ = -1
 let seed = 1
 let ponds = []
 let oceans = []
 let mountains = []
 let islands = []
+let deserts = []
 let hillFeatures = []
 let plains = []
 let keys = new Set()
@@ -264,15 +275,15 @@ function createWorldFeatures() {
     islands = [
         {
             name: 'Main Island',
-            x: N * vary(1001, 0.58, 0.075), z: N * vary(1003, 0.36, 0.075),
-            rx: scale(1007, 60, 0.22), rz: scale(1009, 57, 0.22),
-            peak: scale(1013, 22, 0.30), warp: scale(1019, 17, 0.45), edgeScale: vary(1021, 0.85, 0.24)
+            x: N * vary(1001, 0.63, 0.04), z: N * vary(1003, 0.39, 0.04),
+            rx: scale(1007, 72, 0.22), rz: scale(1009, 62, 0.22),
+            peak: scale(1013, 25, 0.34), warp: scale(1019, 20, 0.55), edgeScale: vary(1021, 0.90, 0.28)
         },
         {
             name: 'Southwest Island',
-            x: N * vary(1031, 0.33, 0.055), z: N * vary(1033, 0.70, 0.045),
-            rx: scale(1039, 58, 0.20), rz: scale(1049, 48, 0.22),
-            peak: scale(1051, 20, 0.30), warp: scale(1061, 13, 0.55), edgeScale: vary(1063, 0.70, 0.24)
+            x: N * vary(1031, 0.30, 0.025), z: N * vary(1033, 0.72, 0.03),
+            rx: scale(1039, 56, 0.20), rz: scale(1049, 48, 0.20),
+            peak: scale(1051, 22, 0.32), warp: scale(1061, 17, 0.58), edgeScale: vary(1063, 0.82, 0.28)
         },
         {
             name: 'Northwest Island',
@@ -336,6 +347,24 @@ function createWorldFeatures() {
         }
     ]
 
+    // Broad desert biomes occupy large inland stretches of the country-sized islands.
+    deserts = [
+        {
+            name: 'Western Desert',
+            x: N * vary(1901, 0.30, 0.075), z: N * vary(1907, 0.70, 0.065),
+            rx: scale(1913, 36, 0.30), rz: scale(1919, 28, 0.30),
+            warp: scale(1921, 14, 0.50), edgeScale: vary(1931, 1.25, 0.30)
+        }
+    ]
+    if (rand(1933, 1937) > 0.38) {
+        deserts.push({
+            name: 'Mainland Desert',
+            x: N * vary(1949, 0.60, 0.075), z: N * vary(1951, 0.38, 0.075),
+            rx: scale(1957, 34, 0.32), rz: scale(1961, 27, 0.32),
+            warp: scale(1973, 13, 0.55), edgeScale: vary(1979, 1.28, 0.32)
+        })
+    }
+
     const mountainRoll = rand(1481, 1483)
     mountains = []
 
@@ -350,7 +379,7 @@ function createWorldFeatures() {
             slope: vary(1543, 0.78, 0.22), warp: scale(1549, 27, 0.50),
             edgeScale: vary(1553, 1.25, 0.30), roughness: vary(1559, 0.24, 0.20),
             cliffAngle: angle,
-            caveCount: 2 + Math.floor(rand(1567, 1571) * 3), ridgeAmp: scale(1573, 5, 0.60)
+            caveCount: 3 + Math.floor(rand(1567, 1571) * 5), ridgeAmp: scale(1573, 5, 0.60)
         })
     } else if (mountainRoll < 0.065) {
         const angle = rand(1579, 1583) * Math.PI * 2
@@ -362,7 +391,7 @@ function createWorldFeatures() {
             slope: vary(1613, 0.68, 0.22), warp: scale(1619, 22, 0.55),
             edgeScale: vary(1621, 1.18, 0.30), roughness: vary(1627, 0.20, 0.30),
             cliffAngle: angle,
-            caveCount: 1 + Math.floor(rand(1637, 1641) * 3), ridgeAmp: scale(6427, 4, 0.70)
+            caveCount: 2 + Math.floor(rand(1637, 1641) * 4), ridgeAmp: scale(6427, 4, 0.70)
         })
     }
 
@@ -424,6 +453,42 @@ function irregularDistance(x, z, feature) {
     const edgeScale = feature.edgeScale ?? 1
 
     return distance + (angularRidges + broadNoise + mediumNoise + fineNoise) * edgeScale
+}
+
+function desertInfluenceAt(x, z) {
+    let influence = 0
+    for (const desert of deserts) {
+        const distance = irregularDistance(x, z, desert)
+        const t = clamp((1.16 - distance) / 0.32, 0, 1)
+        const smooth = t * t * (3 - 2 * t)
+        influence = Math.max(influence, smooth)
+    }
+    return influence
+}
+
+function isBeachSandAt(x, z, h) {
+    const seaLevel = oceans.length ? oceans[0].level : 8
+    // Beaches stay near water level; high cliffs are intentionally left unsanded.
+    if (h <= seaLevel || h > seaLevel + 5) return false
+
+    let nearWater = false
+    for (let dx = -3; dx <= 3 && !nearWater; dx++) {
+        for (let dz = -3; dz <= 3; dz++) {
+            if (dx === 0 && dz === 0) continue
+            const nx = x + dx, nz = z + dz
+            if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue
+            if (heights[ci(nx, nz)] <= seaLevel) {
+                nearWater = true
+                break
+            }
+        }
+    }
+    if (!nearWater) return false
+
+    // A low-frequency mask creates broken beach stretches rather than a sand ring.
+    const broadPatch = noise(x * 0.055 + seed * 0.013 + 211, z * 0.055 - seed * 0.017 + 83)
+    const patchDetail = noise(x * 0.14 + seed * 0.021 + 17, z * 0.14 - seed * 0.019 + 59)
+    return broadPatch > 0.39 && patchDetail > 0.39 && rand(x + 2003, z + 2011) > 0.16
 }
 
 function islandInfluenceAt(x, z) {
@@ -668,32 +733,43 @@ function createRiverChannels() {
 
 function voxelize() {
     voxels.fill(EMPTY)
-    // Stone starts around the upper half of a mountain's rise. This leaves
-    // foothills and lower slopes grassy, while peaks naturally transition to stone.
+
     const mountainStoneThreshold = mountains.length
         ? Math.max(...mountains.map(m => m.peak)) * 0.58
         : Infinity
+    const seaLevel = oceans[0].level
 
     for (let x = 0; x < N; x++) {
         for (let z = 0; z < N; z++) {
             const h = heights[ci(x, z)]
             const wet = waterLevels[ci(x, z)] !== EMPTY && h < waterLevels[ci(x, z)]
-
+            const desert = !wet && desertInfluenceAt(x, z) > 0.42
+            const beach = !wet && !desert && isBeachSandAt(x, z, h)
             const stoneMountainTop = mountainRiseAt(x, z) >= mountainStoneThreshold
+
             for (let y = 0; y <= h; y++) {
-                set(x, y, z,
-                    y === h ? (wet ? DIRT : (stoneMountainTop ? STONE : GRASS)) :
-                    y >= h - 3 ? DIRT : STONE
-                )
+                let type
+                if (y === h) {
+                    type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : GRASS))
+                } else if (desert && y >= h - 4) {
+                    type = SAND
+                } else if (beach && y >= h - 2) {
+                    type = SAND
+                } else if (y >= h - 3) {
+                    type = DIRT
+                } else {
+                    type = STONE
+                }
+                set(x, y, z, type)
             }
         }
     }
 
+    // Water only fills voids up to the fixed sea surface, never above the land.
     for (let x = 0; x < N; x++) {
         for (let z = 0; z < N; z++) {
             const level = waterLevels[ci(x, z)]
             if (level === EMPTY) continue
-
             for (let y = heights[ci(x, z)] + 1; y <= level; y++) {
                 if (get(x, y, z) === EMPTY) set(x, y, z, WATER)
             }
@@ -706,61 +782,147 @@ function carveMountainCaves() {
 
     for (let mountainIndex = 0; mountainIndex < mountains.length; mountainIndex++) {
         const mountain = mountains[mountainIndex]
-        const count = mountain.caveCount || 1
+        const caveCount = mountain.caveCount || 1
 
-        for (let caveIndex = 0; caveIndex < count; caveIndex++) {
-            const offset = (caveIndex - (count - 1) / 2) * 0.50
-            const angle = mountain.cliffAngle + offset +
-                (rand(mountainIndex * 73 + caveIndex * 29 + 911,
-                      mountainIndex * 47 + caveIndex * 31 + 937) - 0.5) * 0.38
-
-            // Place entrances on the outside slope, pointing inward into the massif.
-            const mouthX = mountain.x + Math.cos(angle) * mountain.rx * 0.84
-            const mouthZ = mountain.z + Math.sin(angle) * mountain.rz * 0.84
+        for (let caveIndex = 0; caveIndex < caveCount; caveIndex++) {
+            const caveKey = mountainIndex * 97 + caveIndex * 131
+            const angle = mountain.cliffAngle +
+                caveIndex * (Math.PI * 2 / caveCount) +
+                (rand(caveKey + 911, caveKey + 937) - 0.5) * 1.15
+            const mouthRadius = 0.68 + rand(caveKey + 941, caveKey + 947) * 0.20
+            const mouthX = mountain.x + Math.cos(angle) * mountain.rx * mouthRadius
+            const mouthZ = mountain.z + Math.sin(angle) * mountain.rz * mouthRadius
             const mx = clamp(Math.round(mouthX), 1, N - 2)
             const mz = clamp(Math.round(mouthZ), 1, N - 2)
             const mouthSurface = heights[ci(mx, mz)]
-
             if (mouthSurface <= seaLevel + 8) continue
 
             const inwardX = -Math.cos(angle)
             const inwardZ = -Math.sin(angle)
-            const depth = 10 + rand(mountainIndex * 101 + caveIndex * 37 + 953,
-                                    mountainIndex * 107 + caveIndex * 41 + 971) * 8
-            const halfWidth = 1.8 + rand(mountainIndex * 113 + caveIndex * 43 + 977,
-                                         mountainIndex * 127 + caveIndex * 47 + 983) * 1.2
-            const halfHeight = 2.2 + rand(mountainIndex * 131 + caveIndex * 53 + 991,
-                                          mountainIndex * 137 + caveIndex * 59 + 997) * 1.1
-            const centerY = mouthSurface - halfHeight + 0.45
+            const sideX = -inwardZ
+            const sideZ = inwardX
+            const depth = 20 + rand(caveKey + 953, caveKey + 971) * 27
+            const baseHalfWidth = 3.0 + rand(caveKey + 977, caveKey + 983) * 3.8
+            const baseHalfHeight = 3.2 + rand(caveKey + 991, caveKey + 997) * 3.8
+            const phase = rand(caveKey + 1009, caveKey + 1013) * Math.PI * 2
+            const sideBend = 2.0 + rand(caveKey + 1019, caveKey + 1021) * 5.0
+            const verticalSlope = (rand(caveKey + 1031, caveKey + 1033) - 0.5) * 0.16
+            const centerY = mouthSurface - baseHalfHeight * (0.72 + rand(caveKey + 1039, caveKey + 1049) * 0.14)
 
-            const minX = Math.max(1, Math.floor(Math.min(mouthX, mouthX + inwardX * depth) - halfWidth - 3))
-            const maxX = Math.min(N - 2, Math.ceil(Math.max(mouthX, mouthX + inwardX * depth) + halfWidth + 3))
-            const minZ = Math.max(1, Math.floor(Math.min(mouthZ, mouthZ + inwardZ * depth) - halfWidth - 3))
-            const maxZ = Math.min(N - 2, Math.ceil(Math.max(mouthZ, mouthZ + inwardZ * depth) + halfWidth + 3))
+            const minX = Math.max(1, Math.floor(Math.min(mouthX, mouthX + inwardX * depth) - baseHalfWidth - sideBend - 5))
+            const maxX = Math.min(N - 2, Math.ceil(Math.max(mouthX, mouthX + inwardX * depth) + baseHalfWidth + sideBend + 5))
+            const minZ = Math.max(1, Math.floor(Math.min(mouthZ, mouthZ + inwardZ * depth) - baseHalfWidth - sideBend - 5))
+            const maxZ = Math.min(N - 2, Math.ceil(Math.max(mouthZ, mouthZ + inwardZ * depth) + baseHalfWidth + sideBend + 5))
 
             for (let x = minX; x <= maxX; x++) {
                 for (let z = minZ; z <= maxZ; z++) {
-                    const along = (x - mouthX) * inwardX + (z - mouthZ) * inwardZ
-                    if (along < -1.7 || along > depth) continue
-                    const across = (x - mouthX) * -inwardZ + (z - mouthZ) * inwardX
-                    const taper = along > depth - 2.2 ? clamp((depth - along) / 2.2, 0, 1) : 1
-                    const widthNoise = (noise(x * 0.22 + mountain.x, z * 0.22 + mountain.z) - 0.5) * 0.65
-                    const localWidth = Math.max(0.7, (halfWidth + widthNoise) * taper)
+                    const dx = x + 0.5 - mouthX
+                    const dz = z + 0.5 - mouthZ
+                    const along = dx * inwardX + dz * inwardZ
+                    if (along < -2.5 || along > depth + 1.5) continue
 
+                    const across = dx * sideX + dz * sideZ
+                    const bend = Math.sin(along * 0.105 + phase) * sideBend +
+                        (noise(along * 0.075 + phase, caveIndex * 13 + mountainIndex * 29) - 0.5) * sideBend * 1.6
+                    const noisyAcross = across - bend
+                    const taper = along > depth - 4.0 ? clamp((depth + 1.5 - along) / 5.5, 0, 1) : 1
+                    const widthNoise = (noise(x * 0.19 + mountain.x + phase, z * 0.19 + mountain.z) - 0.5) * 2.3
+                    const localWidth = Math.max(1.2, (baseHalfWidth + widthNoise +
+                        Math.sin(along * 0.13 + phase) * 0.85) * taper)
                     const colHeight = heights[ci(x, z)]
                     if (colHeight <= seaLevel + 2) continue
 
-                    for (let y = seaLevel + 2; y <= colHeight; y++) {
-                        const tunnelY = centerY + Math.max(0, along) * 0.18 +
-                            (noise(x * 0.16 + mountain.z, y * 0.18 + mountain.x) - 0.5) * 0.55
-                        const localHeight = Math.max(0.7, (halfHeight +
-                            (noise(x * 0.17 + mountain.x, z * 0.17 + mountain.z + y * 0.03) - 0.5) * 0.6) * taper)
-                        const vertical = (y - tunnelY) / localHeight
-                        const horizontal = across / localWidth
+                    for (let y = seaLevel + 2; y < colHeight; y++) {
+                        const tunnelCenterY = centerY + along * verticalSlope +
+                            Math.sin(along * 0.09 + phase) * 1.7 +
+                            (noise(along * 0.07 + phase + 41, y * 0.06 + caveKey) - 0.5) * 1.3
+                        const localHeight = Math.max(1.4, (baseHalfHeight +
+                            (noise(x * 0.14 + mountain.z + phase, y * 0.11 + mountain.x) - 0.5) * 1.5 +
+                            Math.sin(along * 0.10 + phase) * 0.8) * taper)
+                        const v = (y - tunnelCenterY) / localHeight
+                        const h = noisyAcross / localWidth
 
-                        if (horizontal * horizontal + vertical * vertical < 1 &&
+                        if (h * h + v * v < 1 &&
                             get(x, y, z) !== EMPTY && get(x, y, z) !== WATER) {
                             set(x, y, z, EMPTY)
+                        }
+                    }
+                }
+            }
+
+            // Large lopsided cavern at the tunnel's end, plus an attached side pocket.
+            const chamberAlong = depth * (0.62 + rand(caveKey + 1043, caveKey + 1051) * 0.20)
+            const chamberSide = (rand(caveKey + 1061, caveKey + 1063) - 0.5) * sideBend
+            const chamberX = mouthX + inwardX * chamberAlong + sideX * chamberSide
+            const chamberZ = mouthZ + inwardZ * chamberAlong + sideZ * chamberSide
+            const chamberSurface = heights[ci(clamp(Math.round(chamberX), 1, N - 2), clamp(Math.round(chamberZ), 1, N - 2))]
+            const chamberY = centerY + chamberAlong * verticalSlope +
+                Math.sin(chamberAlong * 0.09 + phase) * 1.7
+            const radiusAlong = 7 + rand(caveKey + 1069, caveKey + 1087) * 7
+            const radiusSide = 6 + rand(caveKey + 1091, caveKey + 1093) * 7
+            const radiusY = 4 + rand(caveKey + 1097, caveKey + 1103) * 4
+
+            const chamberMinX = Math.max(1, Math.floor(chamberX - radiusAlong - radiusSide - 2))
+            const chamberMaxX = Math.min(N - 2, Math.ceil(chamberX + radiusAlong + radiusSide + 2))
+            const chamberMinZ = Math.max(1, Math.floor(chamberZ - radiusAlong - radiusSide - 2))
+            const chamberMaxZ = Math.min(N - 2, Math.ceil(chamberZ + radiusAlong + radiusSide + 2))
+
+            for (let x = chamberMinX; x <= chamberMaxX; x++) {
+                for (let z = chamberMinZ; z <= chamberMaxZ; z++) {
+                    const colHeight = heights[ci(x, z)]
+                    if (colHeight <= seaLevel + 2) continue
+                    const dx = x + 0.5 - chamberX
+                    const dz = z + 0.5 - chamberZ
+                    const along = dx * inwardX + dz * inwardZ
+                    const across = dx * sideX + dz * sideZ
+                    const chamberWarp = (noise(x * 0.16 + mountain.x, z * 0.16 + mountain.z + phase) - 0.5) * 1.8
+                    const ellipsoid = ((along + chamberWarp) / radiusAlong) ** 2 +
+                        (across / radiusSide) ** 2
+
+                    if (ellipsoid >= 1) continue
+                    const roofSafeY = colHeight - 1
+                    const lowY = Math.max(seaLevel + 2, Math.floor(chamberY - radiusY))
+                    const highY = Math.min(roofSafeY, Math.ceil(chamberY + radiusY))
+                    for (let y = lowY; y <= highY; y++) {
+                        const vertical = (y - chamberY) / radiusY
+                        const irregular = (noise(x * 0.12 + phase + y * 0.02, z * 0.12 + caveKey) - 0.5) * 0.18
+                        if (ellipsoid + vertical * vertical + irregular < 1 &&
+                            get(x, y, z) !== EMPTY && get(x, y, z) !== WATER) {
+                            set(x, y, z, EMPTY)
+                        }
+                    }
+                }
+            }
+
+            // Some cave systems sprout a side chamber, making layouts differ markedly.
+            if (rand(caveKey + 1117, caveKey + 1123) > 0.38) {
+                const branchAlong = depth * (0.34 + rand(caveKey + 1129, caveKey + 1151) * 0.28)
+                const branchSide = (rand(caveKey + 1153, caveKey + 1163) - 0.5) * (baseHalfWidth + 6)
+                const bx = mouthX + inwardX * branchAlong + sideX * branchSide
+                const bz = mouthZ + inwardZ * branchAlong + sideZ * branchSide
+                const branchRX = 4 + rand(caveKey + 1171, caveKey + 1181) * 4
+                const branchRY = 3 + rand(caveKey + 1187, caveKey + 1193) * 3
+                const branchRZ = 5 + rand(caveKey + 1201, caveKey + 1213) * 5
+                const branchY = centerY + branchAlong * verticalSlope +
+                    Math.sin(branchAlong * 0.09 + phase) * 1.7
+                const bx0 = Math.max(1, Math.floor(bx - branchRX - branchRZ - 2))
+                const bx1 = Math.min(N - 2, Math.ceil(bx + branchRX + branchRZ + 2))
+                const bz0 = Math.max(1, Math.floor(bz - branchRX - branchRZ - 2))
+                const bz1 = Math.min(N - 2, Math.ceil(bz + branchRX + branchRZ + 2))
+                for (let x = bx0; x <= bx1; x++) {
+                    for (let z = bz0; z <= bz1; z++) {
+                        const colHeight = heights[ci(x, z)]
+                        if (colHeight <= seaLevel + 2) continue
+                        const dx = x + 0.5 - bx, dz = z + 0.5 - bz
+                        const along = dx * inwardX + dz * inwardZ
+                        const across = dx * sideX + dz * sideZ
+                        if ((along / branchRX) ** 2 + (across / branchRZ) ** 2 > 1) continue
+                        for (let y = Math.max(seaLevel + 2, Math.floor(branchY - branchRY)); y <= Math.min(colHeight - 1, Math.ceil(branchY + branchRY)); y++) {
+                            const vertical = (y - branchY) / branchRY
+                            if ((along / branchRX) ** 2 + (across / branchRZ) ** 2 + vertical * vertical < 1 &&
+                                get(x, y, z) !== EMPTY && get(x, y, z) !== WATER) {
+                                set(x, y, z, EMPTY)
+                            }
                         }
                     }
                 }
@@ -774,6 +936,7 @@ function addTrees() {
         for (let z = 2; z < N - 2; z++) {
             const col = ci(x, z)
             if (heights[col] <= waterLevels[col]) continue
+            if (desertInfluenceAt(x, z) > 0.38) continue
 
             const h = heights[col]
             if (get(x, h, z) !== GRASS) continue
@@ -817,9 +980,25 @@ function addTrees() {
 }
 
 function addGroundDecorations() {
-    const grassBuffer = { p: [], n: [], c: [], i: [] }
-    const flowerBuffer = { p: [], n: [], c: [], i: [] }
-    const mushroomBuffer = { p: [], n: [], c: [], i: [] }
+    const decorationBuffersByChunk = new Map()
+    let grassBuffer = null
+    let flowerBuffer = null
+    let mushroomBuffer = null
+
+    function useBuffersForColumn(x, z) {
+        const cx = Math.floor(x / CS)
+        const cz = Math.floor(z / CS)
+        const key = cx + ',' + cz
+        let buffers = decorationBuffersByChunk.get(key)
+        if (!buffers) {
+            const makeBuffer = () => ({ p: [], n: [], c: [], i: [] })
+            buffers = { grass: makeBuffer(), flower: makeBuffer(), mushroom: makeBuffer() }
+            decorationBuffersByChunk.set(key, buffers)
+        }
+        grassBuffer = buffers.grass
+        flowerBuffer = buffers.flower
+        mushroomBuffer = buffers.mushroom
+    }
 
     const greenPalette = [
         [0.19, 0.43, 0.10], [0.28, 0.55, 0.14],
@@ -1003,9 +1182,12 @@ function addGroundDecorations() {
         for (let z = 1; z < N - 1; z++) {
             const col = ci(x, z)
             if (heights[col] <= waterLevels[col]) continue
+            if (desertInfluenceAt(x, z) > 0.38) continue
 
             const groundY = heights[col]
             if (get(x, groundY, z) !== GRASS || get(x, groundY + 1, z) !== EMPTY) continue
+            if (desertInfluenceAt(x, z) > 0.38) continue
+            useBuffersForColumn(x, z)
 
             const roll = rand(x + 307, z + 811)
             const flatness = plainsInfluence(x, z)
@@ -1029,26 +1211,7 @@ function addGroundDecorations() {
         }
     }
 
-    function buildDecorationMesh(name, data, material) {
-        if (!data.p.length) return
-        const mesh = new BABYLON.Mesh(name, scene)
-        const vertexData = new BABYLON.VertexData()
-        vertexData.positions = data.p
-        vertexData.normals = data.n
-        vertexData.colors = data.c
-        vertexData.indices = data.i
-        vertexData.applyToMesh(mesh, false)
-        mesh.material = material
-        mesh.position.y = YOFF
-        mesh.isPickable = false
-        mesh.checkCollisions = false
-        mesh.alwaysSelectAsActiveMesh = false
-        meshes.push(mesh)
-    }
-
-    buildDecorationMesh('ground_grass_details', grassBuffer, decorationMaterials[0])
-    buildDecorationMesh('ground_flowers', flowerBuffer, decorationMaterials[1])
-    buildDecorationMesh('ground_mushrooms', mushroomBuffer, decorationMaterials[2])
+    return decorationBuffersByChunk
 }
 
 const faces = [
@@ -1060,76 +1223,137 @@ const faces = [
     { d: [0, 0, -1], v: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]] }
 ]
 
-function buildWorldMesh() {
-    // One world mesh per material means there are no internal chunk boundary
-    // planes to leak into view. Face culling still removes every hidden block face.
+function createBufferedMesh(name, data, material, chunkList, isWater = false) {
+    if (!data.p.length) return
+    const mesh = new BABYLON.Mesh(name, scene)
+    const vertexData = new BABYLON.VertexData()
+    vertexData.positions = data.p
+    vertexData.normals = data.n
+    if (data.u && data.u.length) vertexData.uvs = data.u
+    if (data.c && data.c.length) vertexData.colors = data.c
+    vertexData.indices = data.i
+    vertexData.applyToMesh(mesh, false)
+    mesh.material = material
+    mesh.position.y = YOFF
+    mesh.isPickable = false
+    mesh.checkCollisions = false
+    mesh.alwaysSelectAsActiveMesh = false
+    if (isWater) mesh.alphaIndex = 10
+    else if (material !== decorationMaterials[0] &&
+             material !== decorationMaterials[1] &&
+             material !== decorationMaterials[2]) mesh.freezeWorldMatrix()
+    meshes.push(mesh)
+    chunkList.push(mesh)
+}
+
+function buildChunk(cx, cz) {
+    const key = cx + ',' + cz
+    const chunkList = []
     const groups = Array.from({ length: MCOUNT }, () => ({
         p: [], n: [], u: [], c: [], i: []
     }))
 
-    let maxY = H - 1
-    while (maxY > 0) {
-        let occupied = false
-        for (let z = 0; z < N && !occupied; z++) {
-            for (let x = 0; x < N; x++) {
-                if (get(x, maxY, z) !== EMPTY) {
-                    occupied = true
+    const x0 = cx * CS, z0 = cz * CS
+    const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
+
+    // Scan actual occupied voxels: tree canopies and carved cave roofs must not
+    // be clipped just because a surface height estimate is too low.
+    let maxY = 0
+    for (let y = H - 1; y >= 0; y--) {
+        let foundOccupied = false
+        for (let z = z0; z < z1 && !foundOccupied; z++) {
+            for (let x = x0; x < x1; x++) {
+                if (get(x, y, z) !== EMPTY) {
+                    foundOccupied = true
                     break
                 }
             }
         }
-        if (occupied) break
-        maxY--
+        if (foundOccupied) {
+            maxY = y
+            break
+        }
     }
 
     for (let y = 0; y <= maxY; y++) {
-        for (let z = 0; z < N; z++) {
-            for (let x = 0; x < N; x++) {
+        for (let z = z0; z < z1; z++) {
+            for (let x = x0; x < x1; x++) {
                 const type = get(x, y, z)
                 if (type === EMPTY) continue
-
-                for (const f of faces) {
-                    const neighbor = get(x + f.d[0], y + f.d[1], z + f.d[2])
+                for (const face of faces) {
+                    const neighbor = get(x + face.d[0], y + face.d[1], z + face.d[2])
+                    // Cross-chunk neighbors are checked against the complete voxel map.
                     if (neighbor !== EMPTY && (neighbor !== WATER || type === WATER)) continue
-
-                    const g = groups[type]
-                    const b = g.p.length / 3
-
+                    const group = groups[type]
+                    const base = group.p.length / 3
                     for (let j = 0; j < 4; j++) {
-                        const v = f.v[j]
-                        g.p.push(x + v[0], y + v[1], z + v[2])
-                        g.n.push(...f.d)
-                        g.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
-                        if (type === LEAVES) g.c.push(1, 1, 1, 1)
+                        const v = face.v[j]
+                        group.p.push(x + v[0], y + v[1], z + v[2])
+                        group.n.push(...face.d)
+                        group.u.push(j === 1 || j === 2 ? 1 : 0, j >= 2 ? 1 : 0)
+                        if (type === LEAVES) group.c.push(1, 1, 1, 1)
                     }
-                    g.i.push(b, b + 1, b + 2, b, b + 2, b + 3)
+                    group.i.push(base, base + 1, base + 2, base, base + 2, base + 3)
                 }
             }
         }
     }
 
-    for (let t = 0; t < MCOUNT; t++) {
-        const g = groups[t]
-        if (!g.p.length) continue
-
-        const mesh = new BABYLON.Mesh('world_' + t, scene)
-        const vd = new BABYLON.VertexData()
-        vd.positions = g.p
-        vd.normals = g.n
-        vd.uvs = g.u
-        if (t === LEAVES) vd.colors = g.c
-        vd.indices = g.i
-        vd.applyToMesh(mesh, false)
-        mesh.material = materials[t]
-        mesh.position.y = YOFF
-        mesh.isPickable = false
-        mesh.checkCollisions = false
-
-        if (t === WATER) mesh.alphaIndex = 10
-        else mesh.freezeWorldMatrix()
-
-        meshes.push(mesh)
+    for (let type = 0; type < MCOUNT; type++) {
+        createBufferedMesh('chunk_' + cx + '_' + cz + '_' + type,
+            groups[type], materials[type], chunkList, type === WATER)
     }
+
+    const decorationBuffers = decorationBuffersByChunk.get(key)
+    if (decorationBuffers) {
+        createBufferedMesh('grass_details_' + key, decorationBuffers.grass, decorationMaterials[0], chunkList)
+        createBufferedMesh('flower_details_' + key, decorationBuffers.flower, decorationMaterials[1], chunkList)
+        createBufferedMesh('mushroom_details_' + key, decorationBuffers.mushroom, decorationMaterials[2], chunkList)
+    }
+
+    return chunkList
+}
+
+function unloadChunk(key) {
+    const chunkList = chunkMeshes.get(key)
+    if (!chunkList) return
+    for (const mesh of chunkList) {
+        mesh.dispose()
+        const index = meshes.indexOf(mesh)
+        if (index >= 0) meshes.splice(index, 1)
+    }
+    chunkMeshes.delete(key)
+}
+
+function updateChunkLoading(force = false) {
+    const centerX = clamp(Math.floor(playerX / CS), 0, CHUNKS_PER_AXIS - 1)
+    const centerZ = clamp(Math.floor(playerZ / CS), 0, CHUNKS_PER_AXIS - 1)
+    if (!force && centerX === lastChunkCenterX && centerZ === lastChunkCenterZ) return
+
+    const wanted = []
+    for (let cz = Math.max(0, centerZ - CHUNK_RENDER_RADIUS); cz <= Math.min(CHUNKS_PER_AXIS - 1, centerZ + CHUNK_RENDER_RADIUS); cz++) {
+        for (let cx = Math.max(0, centerX - CHUNK_RENDER_RADIUS); cx <= Math.min(CHUNKS_PER_AXIS - 1, centerX + CHUNK_RENDER_RADIUS); cx++) {
+            const dx = cx - centerX, dz = cz - centerZ
+            if (dx * dx + dz * dz <= CHUNK_RENDER_RADIUS * CHUNK_RENDER_RADIUS) {
+                wanted.push({ cx, cz, distance: dx * dx + dz * dz, key: cx + ',' + cz })
+            }
+        }
+    }
+    wanted.sort((a, b) => a.distance - b.distance)
+    const limited = wanted.slice(0, MAX_LOADED_CHUNKS)
+    const wantedKeys = new Set(limited.map(chunk => chunk.key))
+
+    for (const key of Array.from(chunkMeshes.keys())) {
+        if (!wantedKeys.has(key)) unloadChunk(key)
+    }
+    for (const chunk of limited) {
+        if (chunkMeshes.has(chunk.key)) continue
+        if (chunkMeshes.size >= MAX_LOADED_CHUNKS) break
+        chunkMeshes.set(chunk.key, buildChunk(chunk.cx, chunk.cz))
+    }
+
+    lastChunkCenterX = centerX
+    lastChunkCenterZ = centerZ
 }
 
 let playerX = N / 2
@@ -1448,6 +1672,10 @@ function updatePlayer(dt) {
 function generate() {
     for (const m of meshes) m.dispose()
     meshes = []
+    chunkMeshes.clear()
+    decorationBuffersByChunk = new Map()
+    lastChunkCenterX = -1
+    lastChunkCenterZ = -1
 
     seed = Math.floor(Math.random() * 2147483646) + 1
 
@@ -1463,9 +1691,7 @@ function generate() {
     carveMountainCaves()
     addTrees()
 
-    buildWorldMesh()
-
-    addGroundDecorations()
+    decorationBuffersByChunk = addGroundDecorations()
 
     let found = false
 
@@ -1504,8 +1730,9 @@ function generate() {
     yaw = 0
     pitch = 0
     syncCamera()
+    updateChunkLoading(true)
 
-    status.textContent = 'World ready. Seed: ' + seed + '. WASD to move, Space to jump.'
+    status.textContent = 'World ready. Seed: ' + seed + '. Chunks: ' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
 }
 
 window.addEventListener('keydown', e => {
@@ -1561,6 +1788,7 @@ engine.runRenderLoop(() => {
     previousTime = now
 
     updatePlayer(dt)
+    updateChunkLoading()
     scene.render()
 })
 
