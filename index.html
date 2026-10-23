@@ -93,7 +93,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Clearer freshwater, depth-darkening saltwater, waterfalls, deep rifts, country-sized islands, patchy outer beaches and rare flat deserts. 4-chunk view radius, 400-chunk cap.</p>
+        <p>WASD to move · Shift to run · Ctrl to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, wide waterfalls, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk view radius, 400-chunk cap.</p>
         <button id="g" type="button">Generate World</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -154,9 +154,9 @@ const materials = colors.map((color, i) => {
         // Freshwater is a distinct light blue and transmits more light.
         // Saltwater stays darker and more opaque to avoid an X-ray appearance.
         m.diffuseColor = i === FRESH_WATER
-            ? new BABYLON.Color3(.34, .68, .94)
-            : new BABYLON.Color3(.075, .24, .47)
-        m.alpha = i === FRESH_WATER ? .43 : .86
+            ? new BABYLON.Color3(.26, .55, .80)
+            : new BABYLON.Color3(.045, .15, .32)
+        m.alpha = i === FRESH_WATER ? .56 : .93
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES || i === PALM_LEAVES || i === DARK_LEAVES) {
@@ -208,6 +208,9 @@ let keys = new Set()
 const PLAYER_RADIUS = .30
 const PLAYER_HEIGHT = 1.8
 const EYE_HEIGHT = 1.58
+const CROUCH_HEIGHT = 1.5
+const CROUCH_EYE_HEIGHT = 1.22
+const CROUCH_SPEED_MULTIPLIER = 0.5
 const MOVE_SPEED = 5.5
 const RUN_SPEED = 9.0
 const JUMP_SPEED = 8.0
@@ -220,13 +223,15 @@ const MAX_SWIM_SPEED = 5.0
 const MAX_WATER_HORIZONTAL_SPEED = 4.5
 const WATER_MOVE_SPEED = 3.0
 const WATER_DIVE_START_SPEED = 2.0
-const MAX_WATER_DIVE_DEPTH = 1.25
+const WATER_HORIZONTAL_DRAG = 0.16
 const MAX_FALL_SPEED = 28
 const SUBSTEP = .12
 const EPS = .0001
 
 let feetY = 10
 let verticalVelocity = 0
+let waterDiveTargetDepth = 0
+let waterMotionSpeed = 0
 let grounded = false
 let yaw = 0
 let pitch = 0
@@ -241,6 +246,18 @@ let previousTime = performance.now()
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const ci = (x, z) => z * N + x
 const idx = (x, y, z) => (y * N + z) * N + x
+
+function isCrouching() {
+    return keys.has('ControlLeft') || keys.has('ControlRight')
+}
+
+function currentPlayerHeight() {
+    return isCrouching() ? CROUCH_HEIGHT : PLAYER_HEIGHT
+}
+
+function currentEyeHeight() {
+    return isCrouching() ? CROUCH_EYE_HEIGHT : EYE_HEIGHT
+}
 
 function get(x, y, z) {
     if (x < 0 || x >= N || z < 0 || z >= N || y < 0 || y >= H) return EMPTY
@@ -511,6 +528,28 @@ function createWorldFeatures() {
     ]
 
 
+    // Add sheltered inland ponds at two different elevations.
+    const lowPondHost = islands[Math.floor(rand(5261, 5273) * Math.min(2, islands.length))]
+    ponds.push({
+        name: 'Low Basin', kind: 'small',
+        x: lowPondHost.x + (rand(5279, 5281) - 0.5) * lowPondHost.rx * 0.32,
+        z: lowPondHost.z + (rand(5287, 5297) - 0.5) * lowPondHost.rz * 0.32,
+        rx: scale(5303, 5.0, 0.42), rz: scale(5309, 4.2, 0.42),
+        warp: scale(5323, 2.3, 0.58), connected: false,
+        level: 4 + Math.floor(rand(5333, 5339) * 7)
+    })
+    if (rand(5347, 5351) > 0.22) {
+        const highPondHost = islands[Math.floor(rand(5357, 5363) * Math.min(2, islands.length))]
+        ponds.push({
+            name: 'Highland Tarn', kind: 'medium',
+            x: highPondHost.x + (rand(5381, 5387) - 0.5) * highPondHost.rx * 0.28,
+            z: highPondHost.z + (rand(5393, 5399) - 0.5) * highPondHost.rz * 0.28,
+            rx: scale(5407, 6.0, 0.42), rz: scale(5413, 5.0, 0.42),
+            warp: scale(5417, 2.8, 0.58), connected: false,
+            level: 13 + Math.floor(rand(5419, 5431) * 8)
+        })
+    }
+
     // A seed now rearranges the islands themselves, including their dimensions,
     // rather than merely repainting noise over nearly fixed coordinates.
     const layoutTargets = []
@@ -589,7 +628,7 @@ function plainsInfluence(x, z) {
 
 function isDarkOakBiomeAt(x, z) {
     const biomeNoise = noise(x * 0.024 + seed * 0.011 + 73, z * 0.024 - seed * 0.017 + 29)
-    return biomeNoise > 0.61 && plainsInfluence(x, z) < 0.56 && desertInfluenceAt(x, z) < 0.32
+    return biomeNoise > 0.75 && plainsInfluence(x, z) < 0.56 && desertInfluenceAt(x, z) < 0.32
 }
 
 // Warp and perturb ellipse distance so shorelines and mountain footprints have
@@ -859,7 +898,7 @@ function createPonds() {
     for (const pond of ponds) {
         pond.level = pond.connected
             ? seaLevel
-            : Math.min(pond.level ?? seaLevel - 2, seaLevel - 2)
+            : clamp(Math.round(pond.level ?? seaLevel - 2), 3, H - 12)
 
         const margin = (pond.warp || 0) + 3
         const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.55 - margin))
@@ -883,16 +922,14 @@ function createPonds() {
                             : 1 + Math.floor(Math.max(0, 1 - edge) * 4)
                     heights[col] = Math.min(originalHeight, Math.max(1, pond.level - depth))
                     waterLevels[col] = pond.level
-                } else if (originalHeight > seaLevel) {
-                    // Smoothly grade the dry bank upward, but never drop it below
-                    // sea level; this prevents the ocean from leaking over the rim.
+                } else if (originalHeight > pond.level) {
+                    // Grade banks to each pond's own waterline for elevated and low basins.
                     const t = clamp((edge - 1) / 0.38, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const target = Math.round(
-                        seaLevel +
-                        (originalHeight - seaLevel) * smooth
+                        pond.level + (originalHeight - pond.level) * smooth
                     )
-                    heights[col] = Math.max(seaLevel, Math.min(originalHeight, target))
+                    heights[col] = Math.min(originalHeight, target)
                 }
             }
         }
@@ -964,7 +1001,6 @@ function createRiverChannels() {
 
 function isFreshWaterColumnAt(x, z) {
     const seaLevel = oceans.length ? oceans[0].level : 12
-    if (heights[ci(x, z)] > seaLevel) return false
 
     for (const pond of ponds) {
         if (irregularDistance(x, z, pond) < 1.52) return true
@@ -979,6 +1015,8 @@ function isFreshWaterColumnAt(x, z) {
             if (Math.hypot(x + 0.5 - px, z + 0.5 - pz) < riverBand) return true
         }
     }
+
+    if (heights[ci(x, z)] > seaLevel) return false
 
     // Shallow waters hugging large islands are fresh; the open ocean remains salt.
     for (let dx = -4; dx <= 4; dx++) {
@@ -1055,6 +1093,8 @@ function addWaterfalls() {
     }
 
     for (let fallIndex = 0; fallIndex < fallCount; fallIndex++) {
+        const widthRoll = rand(5441 + fallIndex * 17, 5443 + fallIndex * 19)
+        const widthRadius = widthRoll > 0.82 ? 2 : widthRoll > 0.46 ? 1 : 0
         let source = null
         for (let attempt = 0; attempt < 520 && !source; attempt++) {
             const host = islands[Math.floor(rand(2317 + fallIndex * 31 + attempt * 7,
@@ -1089,8 +1129,7 @@ function addWaterfalls() {
         const visited = new Set()
         const maxSteps = 52
 
-        // Seed a headwater block and trace a downhill path using the steepest
-        // local slope at every step. Drops become vertical columns of falling water.
+        // Seed a headwater ribbon and trace a downhill path; selected falls widen into curtains.
         placeFlowBlock(x, ground + 1, z)
 
         for (let step = 0; step < maxSteps; step++) {
@@ -1118,15 +1157,21 @@ function addWaterfalls() {
             }
             if (!next) break
 
-            // Flow across the upper lip, then fall under gravity in the lower
-            // column. Existing rock remains solid; water only occupies air/fluid.
+            // Selected falls spread sideways across the cliff face. Each side column
+            // begins above its own ground, and existing solid rock stays untouched.
             const dropTop = Math.min(H - 1, ground + 1)
-            const bottomY = Math.max(heights[next.x * 0 + ci(next.x, next.z)] + 1, seaLevel + 1)
-            for (let y = bottomY; y <= dropTop; y++) {
-                if (!placeFlowBlock(next.x, y, next.z)) {
-                    // A rock obstruction means the waterfall must stop rather than
-                    // render through an island or leave a suspended water fragment.
-                    break
+            const dirX = Math.sign(next.x - x)
+            const dirZ = Math.sign(next.z - z)
+            const perpX = dirZ
+            const perpZ = -dirX
+            for (let w = -widthRadius; w <= widthRadius; w++) {
+                const wx = next.x + perpX * w
+                const wz = next.z + perpZ * w
+                if (wx < 1 || wx >= N - 1 || wz < 1 || wz >= N - 1) continue
+                const bottomY = Math.max(heights[ci(wx, wz)] + 1, seaLevel + 1)
+                if (bottomY > dropTop) continue
+                for (let y = bottomY; y <= dropTop; y++) {
+                    if (!placeFlowBlock(wx, y, wz)) break
                 }
             }
 
@@ -1423,7 +1468,7 @@ function addTrees() {
     }
 
     function placePalm(x, z, h) {
-        const height = 6 + Math.floor(rand(x + 3137, z + 3163) * 5)
+        const height = 4 + Math.floor(rand(x + 3137, z + 3163) * 4)
         const top = h + height
         if (top + 6 >= H) return
         for (let y = h + 1; y <= top; y++) {
@@ -1485,25 +1530,52 @@ function addTrees() {
         for (const [tx,tz] of baseCols) {
             if (heights[ci(tx,tz)] !== h || !isGrassBlock(get(tx,h,tz))) return false
         }
-
-        const height = 7 + Math.floor(rand(x + 3251, z + 3257) * 5)
+        const height = 8 + Math.floor(rand(x + 3251, z + 3257) * 5)
         const top = h + height
         if (top + 5 >= H) return false
         for (const [tx,tz] of baseCols) {
             for (let y=h+1; y<=top+1; y++) if (get(tx,y,tz)!==EMPTY) return false
         }
-        for (const [tx,tz] of baseCols) for(let y=h+1;y<=top;y++) set(tx,y,tz,DARK_WOOD)
+        for (const [tx,tz] of baseCols) for (let y=h+1; y<=top; y++) set(tx,y,tz,DARK_WOOD)
 
-        for (let dy=-2;dy<=2;dy++) {
-            const radius = dy===2 ? 2 : dy===-2 ? 3 : 4
-            for(let dx=-radius;dx<=radius;dx++) {
-                for(let dz=-radius;dz<=radius;dz++) {
-                    if(Math.abs(dx)===radius&&Math.abs(dz)===radius) continue
-                    setIfClear(x+dx,top+dy,z+dz,DARK_LEAVES)
-                }
+        const branchY = h + Math.floor(height * 0.62)
+        const directions = [
+            { dx: 1, dz: 0, sx: x + 1, sz: z },
+            { dx: -1, dz: 0, sx: x, sz: z + 1 },
+            { dx: 0, dz: 1, sx: x, sz: z + 1 },
+            { dx: 0, dz: -1, sx: x + 1, sz: z }
+        ]
+        for (let b = 0; b < directions.length; b++) {
+            if (rand(x + 5459 + b * 13, z + 5471 + b * 17) < 0.38) continue
+            const dir = directions[b]
+            const length = 2 + Math.floor(rand(x + 5483 + b * 19, z + 5489 + b * 23) * 2)
+            for (let d = 1; d <= length; d++) {
+                const bx = dir.sx + dir.dx * d, bz = dir.sz + dir.dz * d
+                if (get(bx, branchY, bz) !== EMPTY) break
+                set(bx, branchY, bz, DARK_WOOD)
             }
         }
-        for(let dx=0;dx<=1;dx++) for(let dz=0;dz<=1;dz++) setIfClear(x+dx,top+2,z+dz,DARK_LEAVES)
+
+        // Uneven rounded leaf layers make an oval crown rather than a boxy cube.
+        const crownLayers = [
+            { dy: -4, radius: 1.8 }, { dy: -3, radius: 2.7 },
+            { dy: -2, radius: 3.5 }, { dy: -1, radius: 4.1 },
+            { dy: 0, radius: 4.0 }, { dy: 1, radius: 3.3 },
+            { dy: 2, radius: 2.4 }, { dy: 3, radius: 1.25 }
+        ]
+        for (const layer of crownLayers) {
+            for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) {
+                const nx = (dx + 0.5) / layer.radius, nz = (dz + 0.5) / layer.radius
+                const shape = nx * nx + nz * nz
+                if (shape > 1.15) continue
+                const edgeNoise = rand(x + 5519 + dx * 17 + layer.dy * 101,
+                    z + 5521 + dz * 19 + layer.dy * 103)
+                if (shape > 0.78 && edgeNoise > 0.56) continue
+                setIfClear(x + dx, top + layer.dy, z + dz, DARK_LEAVES)
+            }
+        }
+        setIfClear(x, top + 2, z, DARK_LEAVES)
+        setIfClear(x + 1, top + 2, z + 1, DARK_LEAVES)
         return true
     }
 
@@ -1977,7 +2049,7 @@ function overlapsSolid(x, z, feet) {
     const minZ = Math.floor(z - PLAYER_RADIUS + EPS)
     const maxZ = Math.floor(z + PLAYER_RADIUS - EPS)
     const minY = Math.floor(feet + EPS)
-    const maxY = Math.floor(feet + PLAYER_HEIGHT - EPS)
+    const maxY = Math.floor(feet + currentPlayerHeight() - EPS)
 
     for (let bx = minX; bx <= maxX; bx++) {
         for (let bz = minZ; bz <= maxZ; bz++) {
@@ -1992,7 +2064,7 @@ function overlapsSolid(x, z, feet) {
 function canOccupy(x, z, feet) {
     if (x - PLAYER_RADIUS < 0 || x + PLAYER_RADIUS > N ||
         z - PLAYER_RADIUS < 0 || z + PLAYER_RADIUS > N ||
-        feet < 0 || feet + PLAYER_HEIGHT >= H) {
+        feet < 0 || feet + currentPlayerHeight() >= H) {
         return false
     }
     return !overlapsSolid(x, z, feet)
@@ -2126,7 +2198,7 @@ function findGround(x, z) {
 function syncCamera() {
     camera.position.set(
         playerX,
-        feetY + EYE_HEIGHT + YOFF,
+        feetY + currentEyeHeight() + YOFF,
         playerZ
     )
     camera.rotation.set(pitch, yaw, 0)
@@ -2148,10 +2220,10 @@ function getWaterSurface() {
         if (bx < 0 || bx >= N || bz < 0 || bz >= N) continue
 
         const lowY = Math.max(0, Math.floor(feetY))
-        const highY = Math.min(H - 1, Math.ceil(feetY + PLAYER_HEIGHT))
+        const highY = Math.min(H - 1, Math.ceil(feetY + currentPlayerHeight()))
         for (let y = lowY; y <= highY; y++) {
             if (!isWaterBlock(get(bx, y, bz))) continue
-            const overlapsBody = feetY < y + 1 && feetY + PLAYER_HEIGHT > y
+            const overlapsBody = feetY < y + 1 && feetY + currentPlayerHeight() > y
             if (!overlapsBody) continue
 
             let top = y
@@ -2166,102 +2238,72 @@ function getWaterSurface() {
 
 function updateUnderwaterAtmosphere() {
     const skyFog = new BABYLON.Color3(.53, .81, .92)
-    const eyeY = feetY + EYE_HEIGHT
-    const bx = Math.floor(playerX)
-    const bz = Math.floor(playerZ)
-    const by = Math.floor(eyeY)
-
+    const eyeY = feetY + currentEyeHeight()
+    const bx = Math.floor(playerX), bz = Math.floor(playerZ), by = Math.floor(eyeY)
     if (bx < 0 || bx >= N || bz < 0 || bz >= N || by < 0 || by >= H) {
-        scene.fogDensity = 0.012
-        scene.fogColor = skyFog
-        hemi.intensity = 0.9
-        sun.intensity = 0.5
+        scene.fogDensity = 0.012; scene.fogColor = skyFog
+        hemi.intensity = 0.9; sun.intensity = 0.5
         return
     }
-
     const type = get(bx, by, bz)
     if (!isWaterBlock(type)) {
-        scene.fogDensity = 0.012
-        scene.fogColor = skyFog
-        hemi.intensity = 0.9
-        sun.intensity = 0.5
+        scene.fogDensity = 0.012; scene.fogColor = skyFog
+        hemi.intensity = 0.9; sun.intensity = 0.5
         return
     }
-
     const level = getWaterSurface() ?? (waterLevels[ci(bx, bz)] + 1)
     const depth = Math.max(0, level - eyeY)
-    const isFresh = type === FRESH_WATER
-
-    if (isFresh) {
-        const d = clamp(depth / 34, 0, 1)
-        scene.fogDensity = 0.0025 + Math.min(depth, 34) * 0.00042
+    if (type === FRESH_WATER) {
+        const d = clamp(depth / 30, 0, 1)
+        scene.fogDensity = 0.0045 + Math.min(depth, 32) * 0.0009
         scene.fogColor = new BABYLON.Color3(
-            0.30 * (1 - d) + 0.10 * d,
-            0.59 * (1 - d) + 0.29 * d,
-            0.78 * (1 - d) + 0.46 * d
+            0.20 * (1 - d) + 0.045 * d,
+            0.43 * (1 - d) + 0.13 * d,
+            0.62 * (1 - d) + 0.24 * d
         )
-        const light = Math.exp(-depth * 0.007)
-        hemi.intensity = 0.9 * light
-        sun.intensity = 0.5 * light
+        const light = Math.exp(-depth * 0.032)
+        hemi.intensity = 0.9 * light; sun.intensity = 0.5 * light
     } else {
-        const d = clamp(depth / 11, 0, 1)
-        scene.fogDensity = 0.026 + Math.min(depth, 22) * 0.0032
+        const d = clamp(depth / 12, 0, 1)
+        scene.fogDensity = 0.045 + Math.min(depth, 20) * 0.005
         scene.fogColor = new BABYLON.Color3(
-            0.025 * (1 - d) + 0.003 * d,
-            0.105 * (1 - d) + 0.012 * d,
-            0.24 * (1 - d) + 0.038 * d
+            0.012 * (1 - d) + 0.0015 * d,
+            0.045 * (1 - d) + 0.006 * d,
+            0.105 * (1 - d) + 0.018 * d
         )
-        const light = Math.exp(-depth * 0.14)
-        hemi.intensity = 0.9 * light
-        sun.intensity = 0.5 * light
+        const light = Math.exp(-depth * 0.22)
+        hemi.intensity = 0.9 * light; sun.intensity = 0.5 * light
     }
 }
 
 function updatePlayer(dt) {
     dt = Math.min(dt, .05)
-
     if (creativeFlying) {
         const forward = new BABYLON.Vector3(Math.sin(yaw), 0, Math.cos(yaw))
         const right = new BABYLON.Vector3(Math.cos(yaw), 0, -Math.sin(yaw))
         let mx = 0, mz = 0
-
         if (keys.has('KeyW')) { mx += forward.x; mz += forward.z }
         if (keys.has('KeyS')) { mx -= forward.x; mz -= forward.z }
         if (keys.has('KeyD')) { mx += right.x; mz += right.z }
         if (keys.has('KeyA')) { mx -= right.x; mz -= right.z }
-
         const horizontalLength = Math.hypot(mx, mz)
         const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
         const flySpeed = (running ? RUN_SPEED : MOVE_SPEED) * 2
         if (horizontalLength > 0) {
-            mx /= horizontalLength
-            mz /= horizontalLength
+            mx /= horizontalLength; mz /= horizontalLength
             moveHorizontal(mx * flySpeed * dt, mz * flySpeed * dt)
         }
-
         const verticalInput = (keys.has('Space') ? 1 : 0) - (keys.has('KeyC') ? 1 : 0)
         if (verticalInput !== 0) moveVertical(verticalInput * flySpeed * dt)
-        grounded = false
-        verticalVelocity = 0
-        jumpQueued = false
+        grounded = false; verticalVelocity = 0; jumpQueued = false
         syncCamera()
         return
     }
+    if (advanceAutoStep(dt)) { syncCamera(); return }
 
-    if (advanceAutoStep(dt)) {
-        syncCamera()
-        return
-    }
-
-    const forward = new BABYLON.Vector3(
-        Math.sin(yaw), 0, Math.cos(yaw)
-    )
-    const right = new BABYLON.Vector3(
-        Math.cos(yaw), 0, -Math.sin(yaw)
-    )
-
+    const forward = new BABYLON.Vector3(Math.sin(yaw), 0, Math.cos(yaw))
+    const right = new BABYLON.Vector3(Math.cos(yaw), 0, -Math.sin(yaw))
     let mx = 0, mz = 0
-
     if (keys.has('KeyW')) { mx += forward.x; mz += forward.z }
     if (keys.has('KeyS')) { mx -= forward.x; mz -= forward.z }
     if (keys.has('KeyD')) { mx += right.x; mz += right.z }
@@ -2269,58 +2311,37 @@ function updatePlayer(dt) {
 
     const len = Math.hypot(mx, mz)
     const waterBeforeMove = getWaterSurface() !== null
+    const crouching = isCrouching()
     let horizontalSpeed = 0
-
     if (len > 0) {
-        mx /= len
-        mz /= len
+        mx /= len; mz /= len
         const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
         const requestedSpeed = running ? RUN_SPEED : MOVE_SPEED
-        const movementSpeed = waterBeforeMove
-            ? (running ? MAX_WATER_HORIZONTAL_SPEED : WATER_MOVE_SPEED)
-            : requestedSpeed
-        const previousX = playerX
-        const previousZ = playerZ
-
+        const baseWaterSpeed = running ? MAX_WATER_HORIZONTAL_SPEED : WATER_MOVE_SPEED
+        const waterSpeed = baseWaterSpeed / (1 + waterMotionSpeed * WATER_HORIZONTAL_DRAG)
+        const movementSpeed = (waterBeforeMove ? waterSpeed : requestedSpeed) *
+            (crouching ? CROUCH_SPEED_MULTIPLIER : 1)
+        const previousX = playerX, previousZ = playerZ
         moveHorizontal(mx * movementSpeed * dt, mz * movementSpeed * dt)
-        if (autoStep) {
-            syncCamera()
-            return
-        }
-
-        horizontalSpeed = Math.hypot(
-            playerX - previousX,
-            playerZ - previousZ
-        ) / Math.max(dt, EPS)
+        if (autoStep) { syncCamera(); return }
+        horizontalSpeed = Math.hypot(playerX - previousX, playerZ - previousZ) / Math.max(dt, EPS)
     }
 
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
-
-    if (!inWater && (keys.has('Space') || jumpQueued) && grounded) {
-        verticalVelocity = JUMP_SPEED
-        grounded = false
-    }
-    jumpQueued = false
-
     if (inWater) {
-        const forwardInput =
-            (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)
+        if (len > 0) waterMotionSpeed = horizontalSpeed
+        else waterMotionSpeed *= Math.exp(-2.4 * dt)
+        if (crouching) waterDiveTargetDepth += 2.8 * dt
+        if (keys.has('Space')) waterDiveTargetDepth = Math.max(0, waterDiveTargetDepth - 3.8 * dt)
+
+        const forwardInput = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)
         const lookVertical = -Math.sin(pitch)
-        const swimVerticalInput =
-            lookVertical * forwardInput +
-            (keys.has('Space') ? 1.0 : 0) -
-            (keys.has('ControlLeft') || keys.has('ControlRight') ? 1.0 : 0)
-
-        const diveRatio = clamp(
-            (horizontalSpeed - WATER_DIVE_START_SPEED) /
-            (MAX_WATER_HORIZONTAL_SPEED - WATER_DIVE_START_SPEED),
-            0, 1
-        )
-        const diveDepth = diveRatio * MAX_WATER_DIVE_DEPTH
-        const floatFeet = waterSurface - EYE_HEIGHT + 0.05 +
-            WATER_GRAVITY / WATER_BUOYANCY - diveDepth
-
+        const swimVerticalInput = lookVertical * forwardInput +
+            (keys.has('Space') ? 1.0 : 0) - (crouching ? 1.0 : 0)
+        const velocityDiveDepth = Math.max(0, horizontalSpeed - WATER_DIVE_START_SPEED) * 0.9
+        const floatFeet = waterSurface - currentEyeHeight() + 0.05 +
+            WATER_GRAVITY / WATER_BUOYANCY - waterDiveTargetDepth - velocityDiveDepth
         verticalVelocity -= WATER_GRAVITY * dt
         verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
         verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
@@ -2328,18 +2349,16 @@ function updatePlayer(dt) {
         verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
         moveVertical(verticalVelocity * dt)
     } else {
+        waterDiveTargetDepth = 0
+        waterMotionSpeed *= Math.exp(-5.0 * dt)
         verticalVelocity = Math.max(-MAX_FALL_SPEED, verticalVelocity - GRAVITY * dt)
         const wasFalling = verticalVelocity <= 0
         moveVertical(verticalVelocity * dt)
-        if (wasFalling) {
-            const probe = .045
-            if (!canOccupy(playerX, playerZ, feetY - probe)) {
-                grounded = true
-                verticalVelocity = 0
-            }
+        if (wasFalling && !canOccupy(playerX, playerZ, feetY - .045)) {
+            grounded = true
+            verticalVelocity = 0
         }
     }
-
     syncCamera()
 }
 
@@ -2405,6 +2424,8 @@ function generate() {
     }
 
     verticalVelocity = 0
+    waterDiveTargetDepth = 0
+    waterMotionSpeed = 0
     grounded = true
     jumpQueued = false
     creativeFlying = false
