@@ -93,7 +93,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Saltwater ocean, freshwater coasts/lakes, deeper ocean rifts, country-sized islands, patchy outer beaches and rare flatter deserts. 4-chunk view radius, 400-chunk cap.</p>
+        <p>WASD to move · Shift to run · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Clearer freshwater, depth-darkening saltwater, waterfalls, deep rifts, country-sized islands, patchy outer beaches and rare flat deserts. 4-chunk view radius, 400-chunk cap.</p>
         <button id="g" type="button">Generate World</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -1574,9 +1574,14 @@ function buildChunk(cx, cz) {
                     const neighborZ = z + face.d[2]
                     let neighbor = get(neighborX, y + face.d[1], neighborZ)
 
-                    // Always cull against the complete voxel map, including unloaded neighbors.
-                    // This prevents artificial vertical faces at the loaded-chunk horizon.
-                    if (neighbor !== EMPTY && (!isWaterBlock(neighbor) || isWaterBlock(type))) continue
+                    // Solid-to-solid faces are hidden. At solid/water borders,
+                    // keep the water face and suppress the solid face so falls and
+                    // shorelines remain visible without doubled coplanar faces.
+                    if (isWaterBlock(type)) {
+                        if (isWaterBlock(neighbor)) continue
+                    } else if (neighbor !== EMPTY) {
+                        continue
+                    }
                     const group = groups[type]
                     const base = group.p.length / 3
                     for (let j = 0; j < 4; j++) {
