@@ -154,9 +154,9 @@ const materials = colors.map((color, i) => {
         // Freshwater is a distinct light blue and transmits more light.
         // Saltwater stays darker and more opaque to avoid an X-ray appearance.
         m.diffuseColor = i === FRESH_WATER
-            ? new BABYLON.Color3(.075, .20, .34)
-            : new BABYLON.Color3(.008, .025, .070)
-        m.alpha = i === FRESH_WATER ? .88 : .97
+            ? new BABYLON.Color3(.34, .68, .94)
+            : new BABYLON.Color3(.075, .24, .47)
+        m.alpha = i === FRESH_WATER ? .43 : .86
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES || i === PALM_LEAVES || i === DARK_LEAVES) {
@@ -220,7 +220,7 @@ const WATER_BUOYANCY = 8.0
 const WATER_DRAG = 3.0
 const SWIM_ACCELERATION = 24
 const MAX_SWIM_SPEED = 5.0
-const MAX_WATER_HORIZONTAL_SPEED = 4.5
+const MAX_WATER_HORIZONTAL_SPEED = 7.2
 const WATER_MOVE_SPEED = 3.0
 const WATER_DIVE_START_SPEED = 2.0
 const WATER_HORIZONTAL_DRAG = 0.16
@@ -378,7 +378,7 @@ function createWorldFeatures() {
             x: N * vary(1327, 0.40, 0.06), z: N * vary(1329, 0.50, 0.06),
             rx: scale(1333, 13.5, 0.30), rz: scale(1339, 12, 0.30),
             warp: scale(1341, 5.5, 0.60),
-            connected: true, level: 8,
+            connected: true, variableLevel: true, level: 8,
             riverPath: [
                 { x: N * vary(1343, 0.40, 0.06), z: N * vary(1349, 0.50, 0.06) },
                 { x: N * vary(1351, 0.35, 0.05), z: N * vary(1357, 0.51, 0.05) },
@@ -467,7 +467,7 @@ function createWorldFeatures() {
 
     // Mountains remain rare and now occupy only part of their host island.
     // Footprints range from tall, small plateaus to larger broken escarpments.
-    if (mountainRoll < 0.04) {
+    if (mountainRoll < 0.05) {
         const host = chooseHostIsland(1485)
         const center = placeNearIsland(host, 1493, 1499, 0.34)
         mountains.push({
@@ -484,7 +484,7 @@ function createWorldFeatures() {
             caveCount: 3 + Math.floor(rand(1573, 1577) * 5),
             ridgeAmp: scale(1581, 7.2, 0.65)
         })
-    } else if (mountainRoll < 0.065) {
+    } else if (mountainRoll < 0.085) {
         const host = chooseHostIsland(1583)
         const center = placeNearIsland(host, 1589, 1597, 0.30)
         const styleRoll = rand(1601, 1607)
@@ -631,8 +631,10 @@ function plainsInfluence(x, z) {
 }
 
 function isDarkOakBiomeAt(x, z) {
-    const biomeNoise = noise(x * 0.024 + seed * 0.011 + 73, z * 0.024 - seed * 0.017 + 29)
-    return biomeNoise > 0.75 && plainsInfluence(x, z) < 0.56 && desertInfluenceAt(x, z) < 0.32
+    // Larger, broader forest regions: lower spatial frequency expands patches;
+    // a slightly lower threshold lets their edges occupy more of the island.
+    const biomeNoise = noise(x * 0.016 + seed * 0.011 + 73, z * 0.016 - seed * 0.017 + 29)
+    return biomeNoise > 0.70 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
 }
 
 // Warp and perturb ellipse distance so shorelines and mountain footprints have
@@ -914,7 +916,7 @@ function createPonds() {
 
     for (const pond of ponds) {
         pond.disabled = false
-        if (pond.connected) {
+        if (pond.connected && !pond.variableLevel) {
             pond.level = seaLevel
         } else {
             const originalX = pond.x, originalZ = pond.z
@@ -958,6 +960,14 @@ function createPonds() {
 
             pond.x = best.x
             pond.z = best.z
+            if (pond.riverPath) {
+                const shiftX = pond.x - originalX
+                const shiftZ = pond.z - originalZ
+                for (const point of pond.riverPath) {
+                    point.x += shiftX
+                    point.z += shiftZ
+                }
+            }
             const basinDepth = isHighland
                 ? 2 + Math.floor(rand(pond.x + 5557, pond.z + 5563) * 4)
                 : isLowBasin
@@ -1004,7 +1014,8 @@ function createRiverChannels() {
     const seaLevel = oceans[0].level
 
     for (const pond of ponds) {
-        if (!pond.connected || !pond.riverPath || pond.riverPath.length < 2) continue
+        if (!pond.riverPath || pond.riverPath.length < 2 || pond.disabled ||
+            pond.level <= seaLevel) continue
         const points = pond.riverPath
         const widthBase = pond.kind === 'large' ? 3.3 : 2.2
 
@@ -1016,6 +1027,8 @@ function createRiverChannels() {
 
             for (let step = 0; step <= samples; step++) {
                 const t = step / samples
+                const progress = (segment + t) / (points.length - 1)
+                const riverLevel = Math.round(pond.level + (seaLevel - pond.level) * progress)
                 const px = a.x + (b.x - a.x) * t
                 const pz = a.z + (b.z - a.z) * t
                 const width = widthBase +
@@ -1039,20 +1052,17 @@ function createRiverChannels() {
                             )
                             heights[col] = Math.min(
                                 originalHeight,
-                                Math.max(1, seaLevel - depth)
+                                Math.max(1, riverLevel - depth)
                             )
-                            waterLevels[col] = seaLevel
-                        } else if (distance <= localWidth + 2.2 && originalHeight > seaLevel) {
-                            const bankT = clamp(
-                                (distance - localWidth) / 2.2, 0, 1
-                            )
+                            waterLevels[col] = riverLevel
+                        } else if (distance <= localWidth + 2.2 && originalHeight > riverLevel) {
+                            const bankT = clamp((distance - localWidth) / 2.2, 0, 1)
                             const smooth = bankT * bankT * (3 - 2 * bankT)
                             const target = Math.round(
-                                seaLevel +
-                                (originalHeight - seaLevel) * smooth
+                                riverLevel + (originalHeight - riverLevel) * smooth
                             )
                             heights[col] = Math.max(
-                                seaLevel,
+                                riverLevel,
                                 Math.min(originalHeight, target)
                             )
                         }
@@ -1142,16 +1152,12 @@ function voxelize() {
     }
 }
 
-function addWaterfalls() {
+function flowWaterDownhill() {
     const seaLevel = oceans[0].level
-    const elevatedPonds = ponds
-        .filter(pond => !pond.disabled && !pond.connected && pond.level >= seaLevel + 2)
+    const sources = ponds
+        .filter(pond => !pond.disabled && (!pond.connected || pond.variableLevel) &&
+            Number.isFinite(pond.level))
         .sort((a, b) => b.level - a.level)
-
-    // No high lake means no waterfall. Even with one, many worlds have no major fall.
-    if (!elevatedPonds.length || rand(5527, 5531) < 0.28) return
-    const sourcePond = elevatedPonds[0]
-    const sourceLevel = sourcePond.level
 
     const placeFlowBlock = (x, y, z) => {
         if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 0 || y >= H) return false
@@ -1161,77 +1167,53 @@ function addWaterfalls() {
         return true
     }
 
-    function lowerWaterSourceAt(x, z) {
-        const col = ci(x, z)
-        if (heights[col] < seaLevel &&
-            waterLevels[col] === seaLevel &&
-            isWaterBlock(get(x, seaLevel, z))) {
-            return { kind: 'ocean', level: seaLevel }
-        }
+    for (const sourcePond of sources) {
+        const sourceLevel = Math.round(sourcePond.level)
+        const margin = (sourcePond.warp || 0) + 3
+        const x0 = Math.max(1, Math.floor(sourcePond.x - sourcePond.rx * 1.25 - margin))
+        const x1 = Math.min(N - 2, Math.ceil(sourcePond.x + sourcePond.rx * 1.25 + margin))
+        const z0 = Math.max(1, Math.floor(sourcePond.z - sourcePond.rz * 1.25 - margin))
+        const z1 = Math.min(N - 2, Math.ceil(sourcePond.z + sourcePond.rz * 1.25 + margin))
+        const outlets = []
 
-        for (const pond of ponds) {
-            if (pond === sourcePond || pond.level >= sourceLevel - 2) continue
-            if (irregularDistance(x, z, pond) > 1.08) continue
-            if (heights[col] < pond.level && isWaterBlock(get(x, pond.level, z))) {
-                return { kind: 'pond', level: pond.level, pond }
-            }
-        }
-        return null
-    }
+        // Only water at the actual edge of a generated body can become an outlet.
+        for (let x = x0; x <= x1; x++) {
+            for (let z = z0; z <= z1; z++) {
+                const edge = irregularDistance(x, z, sourcePond)
+                if (edge < 0.70 || edge > 1.08) continue
+                if (!isWaterBlock(get(x, sourceLevel, z))) continue
 
-    // Find genuine water-covered lake outlets on the shoreline, not random hilltops.
-    const outlets = []
-    const x0 = Math.max(1, Math.floor(sourcePond.x - sourcePond.rx * 1.25 - sourcePond.warp - 2))
-    const x1 = Math.min(N - 2, Math.ceil(sourcePond.x + sourcePond.rx * 1.25 + sourcePond.warp + 2))
-    const z0 = Math.max(1, Math.floor(sourcePond.z - sourcePond.rz * 1.25 - sourcePond.warp - 2))
-    const z1 = Math.min(N - 2, Math.ceil(sourcePond.z + sourcePond.rz * 1.25 + sourcePond.warp + 2))
+                for (let dz = -1; dz <= 1; dz++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        if (dx === 0 && dz === 0) continue
+                        const nx = x + dx, nz = z + dz
+                        if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+                        if (irregularDistance(nx, nz, sourcePond) < 1.00) continue
 
-    for (let x = x0; x <= x1; x++) {
-        for (let z = z0; z <= z1; z++) {
-            const edge = irregularDistance(x, z, sourcePond)
-            if (edge < 0.68 || edge > 1.04) continue
-            if (!isWaterBlock(get(x, sourceLevel, z))) continue
-
-            const sourceGround = heights[ci(x, z)]
-            const sourceInfluence = islandInfluenceAt(x, z)
-            for (let dz = -1; dz <= 1; dz++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    if (dx === 0 && dz === 0) continue
-                    const nx = x + dx, nz = z + dz
-                    if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                    if (irregularDistance(nx, nz, sourcePond) < 0.94) continue
-                    const nextGround = heights[ci(nx, nz)]
-                    if (nextGround + 2 >= sourceLevel) continue
-
-                    const drop = sourceLevel - nextGround
-                    const outward = sourceInfluence - islandInfluenceAt(nx, nz)
-                    const score = drop + outward * 3.5 +
-                        rand(x + nx * 13 + 5521, z + nz * 17 + 5523) * 0.04
-                    outlets.push({
-                        x, z, ground: sourceGround,
-                        nextX: nx, nextZ: nz, score
-                    })
+                        const ground = heights[ci(nx, nz)]
+                        const drop = sourceLevel - (ground + 1)
+                        if (drop < 2) continue
+                        const distance = Math.hypot(dx, dz)
+                        const score = drop / distance +
+                            (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3.0 +
+                            rand(x + nx * 17 + 5603, z + nz * 19 + 5609) * 0.025
+                        outlets.push({ x: nx, z: nz, score })
+                    }
                 }
             }
         }
-    }
 
-    outlets.sort((a, b) => b.score - a.score)
-    if (!outlets.length) return
-
-    // Test the strongest shoreline outlets first. Accept only a continuous,
-    // non-rising route into a lower pond or the ocean.
-    for (const outlet of outlets.slice(0, 18)) {
-        const path = [{
-            x: outlet.x, z: outlet.z,
-            ground: outlet.ground, incomingTop: sourceLevel
-        }]
-        let x = outlet.nextX, z = outlet.nextZ
+        if (!outlets.length) continue
+        outlets.sort((a, b) => b.score - a.score)
+        const first = outlets[0]
+        let x = first.x, z = first.z
         let flowTop = sourceLevel
-        let reachedLowerSource = false
-        const visited = new Set([outlet.x + ',' + outlet.z])
+        let flatRun = 0
+        let madeFall = false
+        const visited = new Set()
+        const maxSteps = 128
 
-        for (let step = 0; step < 180; step++) {
+        for (let step = 0; step < maxSteps; step++) {
             if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1) break
             const key = x + ',' + z
             if (visited.has(key)) break
@@ -1239,17 +1221,35 @@ function addWaterfalls() {
 
             const ground = heights[ci(x, z)]
             if (ground + 1 > flowTop) break
-            path.push({ x, z, ground, incomingTop: flowTop })
 
-            if (lowerWaterSourceAt(x, z)) {
-                reachedLowerSource = true
-                break
+            const insideSource = irregularDistance(x, z, sourcePond) < 1.45
+            let touchesOtherWater = false
+            if (!insideSource) {
+                for (let y = ground + 1; y <= flowTop; y++) {
+                    if (isWaterBlock(get(x, y, z))) {
+                        touchesOtherWater = true
+                        break
+                    }
+                }
+            }
+            if (touchesOtherWater) break
+
+            // Reject obstructed columns before placing any part of the fall.
+            let obstructed = false
+            for (let y = ground + 1; y <= flowTop; y++) {
+                if (isSolid(x, y, z)) { obstructed = true; break }
+            }
+            if (obstructed) break
+
+            if (flowTop - (ground + 1) >= 2) madeFall = true
+            for (let y = ground + 1; y <= flowTop; y++) {
+                if (get(x, y, z) === EMPTY) placeFlowBlock(x, y, z)
             }
 
             const nextFlowTop = Math.min(flowTop, ground + 1)
-            const currentInfluence = islandInfluenceAt(x, z)
-            let next = null
-            let nextScore = -Infinity
+            let steepest = null
+            let steepestScore = -Infinity
+            const flatOptions = []
             for (let dz = -1; dz <= 1; dz++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     if (dx === 0 && dz === 0) continue
@@ -1257,55 +1257,44 @@ function addWaterfalls() {
                     if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
                     if (visited.has(nx + ',' + nz)) continue
                     const nh = heights[ci(nx, nz)]
-                    if (nh > ground || nh + 1 > nextFlowTop) continue
+                    if (nh + 1 > nextFlowTop || nh > ground) continue
 
-                    const outward = currentInfluence - islandInfluenceAt(nx, nz)
-                    const score = (ground - nh) * 1.35 + outward * 4.0 +
-                        rand(nx * 17 + step, nz * 19 - step) * 0.025
-                    if (score > nextScore) {
-                        nextScore = score
-                        next = { x: nx, z: nz }
+                    if (nh < ground) {
+                        const score = (ground - nh) / Math.hypot(dx, dz) +
+                            rand(nx + step * 11 + 5611, nz - step * 13 + 5617) * 0.015
+                        if (score > steepestScore) {
+                            steepestScore = score
+                            steepest = { x: nx, z: nz, height: nh }
+                        }
+                    } else {
+                        flatOptions.push({
+                            x: nx, z: nz, height: nh,
+                            score: rand(nx + step * 17 + 5623, nz - step * 19 + 5629)
+                        })
                     }
                 }
             }
-            if (!next) break
+
+            let next = steepest
+            if (next) {
+                flatRun = 0
+            } else {
+                if (flatRun >= 4 || !flatOptions.length) break
+                flatOptions.sort((a, b) => b.score - a.score)
+                next = flatOptions[0]
+                flatRun++
+            }
+
             flowTop = nextFlowTop
             x = next.x
             z = next.z
         }
 
-        if (!reachedLowerSource || path.length < 4) continue
-        const hasCliffDrop = path.slice(1).some(node =>
-            node.incomingTop - (node.ground + 1) >= 2
-        )
-        if (!hasCliffDrop) continue
-
-        // One waterfall per successful source lake. Most are 3 blocks wide;
-        // occasional high falls spread into a 5-block curtain.
-        const widthRoll = rand(sourcePond.x + 5529, sourcePond.z + 5531)
-        const widthRadius = widthRoll > 0.78 ? 2 : widthRoll > 0.35 ? 1 : 0
-        for (let i = 1; i < path.length; i++) {
-            const node = path[i]
-            const previous = path[i - 1]
-            const directionX = Math.sign(node.x - previous.x)
-            const directionZ = Math.sign(node.z - previous.z)
-            const perpX = directionZ
-            const perpZ = -directionX
-            const isFall = node.incomingTop - (node.ground + 1) >= 2
-            const radius = isFall ? widthRadius : 0
-
-            for (let w = -radius; w <= radius; w++) {
-                const wx = node.x + perpX * w
-                const wz = node.z + perpZ * w
-                if (wx < 1 || wx >= N - 1 || wz < 1 || wz >= N - 1) continue
-                const bottomY = heights[ci(wx, wz)] + 1
-                if (bottomY > node.incomingTop) continue
-                for (let y = bottomY; y <= node.incomingTop; y++) {
-                    if (!placeFlowBlock(wx, y, wz)) break
-                }
-            }
+        // If the path never produced a visible vertical drop, don't leave a short
+        // horizontal ribbon detached from its source.
+        if (!madeFall) {
+            // All placed water is still connected to the source; no cleanup is needed.
         }
-        return
     }
 }
 
@@ -2378,26 +2367,75 @@ function getWaterSurface() {
 
 function updateUnderwaterAtmosphere(dt = 1 / 60) {
     const skyFog = new BABYLON.Color3(.53, .81, .92)
+    const bx = Math.floor(playerX), bz = Math.floor(playerZ)
     const eyeY = feetY + cameraEyeHeight
-    const bx = Math.floor(playerX), bz = Math.floor(playerZ), by = Math.floor(eyeY)
-    let targetDensity = 0.012
-    let targetColor = skyFog
+    const waterSurface = getWaterSurface()
+    let submersion = 0
+    let waterType = EMPTY
+    let depth = 0
 
-    if (bx >= 0 && bx < N && bz >= 0 && bz < N && by >= 0 && by < H &&
-        isWaterBlock(get(bx, by, bz))) {
-        const level = getWaterSurface() ?? (waterLevels[ci(bx, bz)] + 1)
-        const depth = Math.max(0, level - eyeY)
-        const d = clamp(depth / 12, 0, 1)
-        targetDensity = 0.025 + Math.min(depth, 24) * 0.006
-        targetColor = new BABYLON.Color3(
-            0.045 * (1 - d) + 0.003 * d,
-            0.13 * (1 - d) + 0.014 * d,
-            0.23 * (1 - d) + 0.045 * d
-        )
+    if (waterSurface !== null) {
+        submersion = clamp((waterSurface - feetY) / PLAYER_HEIGHT, 0, 1)
+        depth = Math.max(0, waterSurface - eyeY)
+
+        // Sample the surface water nearest the player, even if their eyes are still
+        // above the surface. This begins dimming as the body enters the water.
+        const offsets = [
+            [0, 0],
+            [PLAYER_RADIUS * 0.65, 0],
+            [-PLAYER_RADIUS * 0.65, 0],
+            [0, PLAYER_RADIUS * 0.65],
+            [0, -PLAYER_RADIUS * 0.65]
+        ]
+        const sampleY = Math.max(0, Math.min(H - 1, Math.floor(waterSurface - EPS)))
+        for (const [ox, oz] of offsets) {
+            const sx = Math.floor(playerX + ox)
+            const sz = Math.floor(playerZ + oz)
+            if (sx < 0 || sx >= N || sz < 0 || sz >= N) continue
+            const t = get(sx, sampleY, sz)
+            if (isWaterBlock(t)) {
+                waterType = t
+                break
+            }
+        }
+        if (!isWaterBlock(waterType) && bx >= 0 && bx < N && bz >= 0 && bz < N) {
+            const localY = Math.max(0, Math.min(H - 1, Math.floor(feetY + Math.min(cameraEyeHeight, waterSurface - feetY))))
+            const t = get(bx, localY, bz)
+            if (isWaterBlock(t)) waterType = t
+        }
     }
 
-    // Blend over time when submerging or surfacing; no freshwater/saltwater toggle.
-    const blend = 1 - Math.exp(-Math.max(0, Math.min(dt, 0.1)) * 2.4)
+    let targetDensity = 0.012
+    let underwaterColor = skyFog
+    if (waterSurface !== null && isWaterBlock(waterType)) {
+        if (waterType === FRESH_WATER) {
+            const d = clamp(depth / 18, 0, 1)
+            targetDensity = 0.070 + Math.min(depth, 26) * 0.0040
+            underwaterColor = new BABYLON.Color3(
+                0.045 * (1 - d) + 0.008 * d,
+                0.19 * (1 - d) + 0.055 * d,
+                0.34 * (1 - d) + 0.17 * d
+            )
+        } else {
+            const d = clamp(depth / 16, 0, 1)
+            targetDensity = 0.090 + Math.min(depth, 25) * 0.0052
+            underwaterColor = new BABYLON.Color3(
+                0.018 * (1 - d) + 0.002 * d,
+                0.085 * (1 - d) + 0.018 * d,
+                0.28 * (1 - d) + 0.12 * d
+            )
+        }
+    }
+
+    // Blend both color and fog strength by body submersion, then ease toward the
+    // target, so there is no instantaneous brightness jump at the water boundary.
+    const targetColor = new BABYLON.Color3(
+        skyFog.r + (underwaterColor.r - skyFog.r) * submersion,
+        skyFog.g + (underwaterColor.g - skyFog.g) * submersion,
+        skyFog.b + (underwaterColor.b - skyFog.b) * submersion
+    )
+    targetDensity = 0.012 + (targetDensity - 0.012) * submersion
+    const blend = 1 - Math.exp(-Math.max(0, Math.min(dt, 0.1)) * 1.8)
     scene.fogDensity += (targetDensity - scene.fogDensity) * blend
     scene.fogColor.r += (targetColor.r - scene.fogColor.r) * blend
     scene.fogColor.g += (targetColor.g - scene.fogColor.g) * blend
@@ -2453,7 +2491,7 @@ function updatePlayer(dt) {
     const running = keys.has('ShiftLeft') || keys.has('ShiftRight')
     const requestedSpeed = running ? RUN_SPEED : MOVE_SPEED
     const waterBaseSpeed = running ? MAX_WATER_HORIZONTAL_SPEED : WATER_MOVE_SPEED
-    const waterRequestedSpeed = waterBaseSpeed / (1 + waterMotionSpeed * WATER_HORIZONTAL_DRAG)
+    const waterRequestedSpeed = waterBaseSpeed
     const desiredSpeed = len > 0
         ? (waterBeforeMove ? waterRequestedSpeed : requestedSpeed) *
             (crouching ? CROUCH_SPEED_MULTIPLIER : 1)
@@ -2550,7 +2588,7 @@ function generate() {
     createPonds()
     createRiverChannels()
     voxelize()
-    addWaterfalls()
+    flowWaterDownhill()
     carveSurfaceFissures()
     carveMountainCaves()
     addTrees()
