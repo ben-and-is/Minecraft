@@ -116,8 +116,9 @@ scene.collisionsEnabled = false
 
 // A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
 const N = 256, H = 96, CS = 16, YOFF = -5
-const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7
-const MCOUNT = 8
+const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_WOOD = 8, PALM_LEAVES = 9, DARK_WOOD = 10, DARK_LEAVES = 11, CACTUS = 12
+const MCOUNT = 13
+const MAX_CHUNK_BUILDS_PER_FRAME = 3
 const MAX_LOADED_CHUNKS = 400
 const CHUNK_RENDER_RADIUS = 4
 const CHUNKS_PER_AXIS = Math.ceil(N / CS)
@@ -142,7 +143,7 @@ const sun = new BABYLON.DirectionalLight(
 )
 sun.intensity = .5
 
-const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0', '#d9c27a', '#54bfc2']
+const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0', '#d9c27a', '#6ebfff', '#997346', '#2f7849', '#3b2b22', '#24452c', '#278b43']
 const materials = colors.map((color, i) => {
     const m = new BABYLON.StandardMaterial('mat' + i, scene)
     m.diffuseColor = BABYLON.Color3.FromHexString(color)
@@ -150,18 +151,17 @@ const materials = colors.map((color, i) => {
     m.backFaceCulling = false
 
     if (i === WATER || i === FRESH_WATER) {
-        // Similar blue hues; freshwater is only slightly lighter but lets
-        // noticeably more light pass through than saltwater.
+        // Freshwater is a distinct light blue and transmits more light.
+        // Saltwater stays darker and more opaque to avoid an X-ray appearance.
         m.diffuseColor = i === FRESH_WATER
-            ? new BABYLON.Color3(.15, .42, .73)
-            : new BABYLON.Color3(.12, .36, .68)
-        m.alpha = i === FRESH_WATER ? .43 : .74
+            ? new BABYLON.Color3(.34, .68, .94)
+            : new BABYLON.Color3(.075, .24, .47)
+        m.alpha = i === FRESH_WATER ? .43 : .86
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
-    } else if (i === LEAVES) {
-        // Keep leaves opaque so alpha blending does not make foliage look
-        // like X-ray geometry when rendered through the transparent water.
-        m.useVertexColors = true
+    } else if (i === LEAVES || i === PALM_LEAVES || i === DARK_LEAVES) {
+        // All foliage is opaque; only the original leaf type needs vertex tint.
+        m.useVertexColors = i === LEAVES
         m.useVertexAlpha = false
         m.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE
         m.needDepthPrePass = false
@@ -188,6 +188,7 @@ const waterLevels = new Int8Array(N * N)
 let meshes = []
 let chunkMeshes = new Map()
 let desiredChunkKeys = new Set()
+let pendingChunkQueue = []
 let decorationBuffersByChunk = new Map()
 let lastChunkCenterX = -1
 let lastChunkCenterZ = -1
@@ -552,28 +553,28 @@ function desertInfluenceAt(x, z) {
 
 function isBeachSandAt(x, z, h) {
     const seaLevel = oceans.length ? oceans[0].level : 12
-    if (h <= seaLevel || h > seaLevel + 5) return false
+    if (h <= seaLevel || h > seaLevel + 8) return false
 
     const currentMask = islandInfluenceAt(x, z)
-    if (currentMask < 0.12) return false
+    if (currentMask < 0.10) return false
 
-    // Exclude shores of inland ponds and lakes: beach sand is an ocean-coast biome.
+    // Do not turn inland lake and pond margins into ocean beaches.
     for (const pond of ponds) {
         if (irregularDistance(x, z, pond) < 1.62) return false
     }
 
-    // A true outer coast has sea-level water just outside a falling island mask.
+    // Sample a slightly wider band to give natural beaches more thickness.
     let outerOceanCoast = false
-    for (let dx = -4; dx <= 4 && !outerOceanCoast; dx++) {
-        for (let dz = -4; dz <= 4; dz++) {
+    for (let dx = -6; dx <= 6 && !outerOceanCoast; dx++) {
+        for (let dz = -6; dz <= 6; dz++) {
             if (dx === 0 && dz === 0) continue
-            if (dx * dx + dz * dz > 16) continue
+            if (dx * dx + dz * dz > 36) continue
             const nx = x + dx, nz = z + dz
             if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue
             const neighborCol = ci(nx, nz)
             if (heights[neighborCol] > seaLevel) continue
             const neighborMask = islandInfluenceAt(nx, nz)
-            if (neighborMask < Math.min(0.62, currentMask - 0.04)) {
+            if (neighborMask < Math.min(0.65, currentMask - 0.025)) {
                 outerOceanCoast = true
                 break
             }
@@ -581,10 +582,10 @@ function isBeachSandAt(x, z, h) {
     }
     if (!outerOceanCoast) return false
 
-    // Beaches come in broken, seed-dependent patches, not a complete sand ring.
-    const broadPatch = noise(x * 0.055 + seed * 0.013 + 211, z * 0.055 - seed * 0.017 + 83)
-    const patchDetail = noise(x * 0.14 + seed * 0.021 + 17, z * 0.14 - seed * 0.019 + 59)
-    return broadPatch > 0.42 && patchDetail > 0.43 && rand(x + 2003, z + 2011) > 0.20
+    // Keep broken beach stretches, not a full sand ring.
+    const broadPatch = noise(x * 0.047 + seed * 0.013 + 211, z * 0.047 - seed * 0.017 + 83)
+    const patchDetail = noise(x * 0.12 + seed * 0.021 + 17, z * 0.12 - seed * 0.019 + 59)
+    return broadPatch > 0.38 && patchDetail > 0.40 && rand(x + 2003, z + 2011) > 0.14
 }
 
 function islandInfluenceAt(x, z) {
@@ -928,7 +929,7 @@ function voxelize() {
                     type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : GRASS))
                 } else if (desert && y >= h - 4) {
                     type = SAND
-                } else if (beach && y >= h - 2) {
+                } else if (beach && y >= h - 3) {
                     type = SAND
                 } else if (y >= h - 3) {
                     type = DIRT
@@ -955,65 +956,101 @@ function voxelize() {
 
 function addWaterfalls() {
     const seaLevel = oceans[0].level
-    const fallCount = 3 + Math.floor(rand(2309, 2311) * 4)
+    const fallCount = 8 + Math.floor(rand(2309, 2311) * 7)
     let made = 0
 
-    for (let fallIndex = 0; fallIndex < fallCount; fallIndex++) {
-        let chosen = null
+    const placeFlowBlock = (x, y, z) => {
+        if (y < 0 || y >= H) return false
+        const existing = get(x, y, z)
+        if (existing === EMPTY || isWaterBlock(existing)) {
+            set(x, y, z, FRESH_WATER)
+            return true
+        }
+        return false
+    }
 
-        for (let attempt = 0; attempt < 220 && !chosen; attempt++) {
+    for (let fallIndex = 0; fallIndex < fallCount; fallIndex++) {
+        let source = null
+        for (let attempt = 0; attempt < 520 && !source; attempt++) {
             const host = islands[Math.floor(rand(2317 + fallIndex * 31 + attempt * 7,
                 2327 + fallIndex * 37 + attempt * 11) * Math.min(5, islands.length))]
-            const x = clamp(Math.round(host.x + (rand(2333 + attempt * 13, 2339 + fallIndex * 17) - 0.5) * host.rx * 1.15), 3, N - 4)
-            const z = clamp(Math.round(host.z + (rand(2341 + attempt * 19, 2347 + fallIndex * 23) - 0.5) * host.rz * 1.15), 3, N - 4)
+            const x = clamp(Math.round(host.x + (rand(2333 + attempt * 13, 2339 + fallIndex * 17) - 0.5) * host.rx * 1.20), 2, N - 3)
+            const z = clamp(Math.round(host.z + (rand(2341 + attempt * 19, 2347 + fallIndex * 23) - 0.5) * host.rz * 1.20), 2, N - 3)
             const high = heights[ci(x, z)]
-            if (high <= seaLevel + 7 || islandInfluenceAt(x, z) < 0.28) continue
+            if (high < seaLevel + 7 || desertInfluenceAt(x, z) > 0.45) continue
+            if (get(x, high, z) !== GRASS && get(x, high, z) !== STONE) continue
 
             let best = null
-            for (let radius = 1; radius <= 7; radius++) {
-                for (let direction = 0; direction < 16; direction++) {
-                    const angle = direction * Math.PI * 2 / 16 +
-                        (rand(2351 + attempt * 17, 2357 + fallIndex * 29) - 0.5) * 0.3
-                    const ex = clamp(Math.round(x + Math.cos(angle) * radius), 1, N - 2)
-                    const ez = clamp(Math.round(z + Math.sin(angle) * radius), 1, N - 2)
-                    const low = heights[ci(ex, ez)]
+            for (let dz = -1; dz <= 1; dz++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dz === 0) continue
+                    const nx = x + dx, nz = z + dz
+                    const low = heights[ci(nx, nz)]
                     const drop = high - low
-                    if (drop < 4) continue
-                    const score = drop - radius * 0.25
-                    if (!best || score > best.score) best = { x: ex, z: ez, height: low, score, radius }
+                    if (drop < 2) continue
+                    const slope = drop / Math.hypot(dx, dz)
+                    const score = slope + noise(nx * 0.17 + seed, nz * 0.17 - seed) * 0.08
+                    if (!best || score > best.score) best = { x: nx, z: nz, height: low, score }
                 }
             }
-
-            if (best) chosen = { x, z, high, endX: best.x, endZ: best.z, low: best.height }
+            if (best) source = { x, z, height: high, next: best }
         }
+        if (!source) continue
 
-        if (!chosen) continue
-        const dx = chosen.endX - chosen.x, dz = chosen.endZ - chosen.z
-        const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) * 1.5))
-        const width = 1 + Math.floor(rand(2371 + fallIndex * 13, 2377 + fallIndex * 19) * 3)
-        const extraDrop = 1 + rand(2381 + fallIndex * 23, 2383 + fallIndex * 29) * 4
+        let x = source.x
+        let z = source.z
+        let ground = source.height
+        let incomingHeight = ground + 1
+        const visited = new Set()
+        const maxSteps = 52
 
-        for (let step = 0; step <= steps; step++) {
-            const t = step / steps
-            const x = clamp(Math.round(chosen.x + dx * t), 1, N - 2)
-            const z = clamp(Math.round(chosen.z + dz * t), 1, N - 2)
-            const ground = heights[ci(x, z)]
-            const waterTop = Math.max(
-                ground + 1,
-                Math.round(chosen.high + 1 - (chosen.high - chosen.low + extraDrop) * t)
-            )
+        // Seed a headwater block and trace a downhill path using the steepest
+        // local slope at every step. Drops become vertical columns of falling water.
+        placeFlowBlock(x, ground + 1, z)
 
-            for (let side = -Math.floor(width / 2); side <= Math.floor(width / 2); side++) {
-                const sideX = clamp(x + (Math.abs(dx) >= Math.abs(dz) ? 0 : side), 1, N - 2)
-                const sideZ = clamp(z + (Math.abs(dx) >= Math.abs(dz) ? side : 0), 1, N - 2)
-                const sideGround = heights[ci(sideX, sideZ)]
-                const sideTop = Math.max(sideGround + 1, waterTop)
-                for (let y = sideGround + 1; y <= sideTop; y++) {
-                    if (get(sideX, y, sideZ) === EMPTY || isWaterBlock(get(sideX, y, sideZ))) {
-                        set(sideX, y, sideZ, FRESH_WATER)
+        for (let step = 0; step < maxSteps; step++) {
+            const key = x + ',' + z
+            if (visited.has(key)) break
+            visited.add(key)
+            if (ground <= seaLevel + 1) break
+
+            let next = null
+            let nextScore = -Infinity
+            for (let dz = -1; dz <= 1; dz++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dz === 0) continue
+                    const nx = x + dx, nz = z + dz
+                    if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+                    const nh = heights[ci(nx, nz)]
+                    if (nh >= ground) continue
+                    const slope = (ground - nh) / Math.hypot(dx, dz)
+                    const tieBreak = noise(nx * 0.12 + seed, nz * 0.12 - seed) * 0.12
+                    if (slope + tieBreak > nextScore) {
+                        nextScore = slope + tieBreak
+                        next = { x: nx, z: nz, height: nh }
                     }
                 }
             }
+            if (!next) break
+
+            // Flow across the upper lip, then fall under gravity in the lower
+            // column. Existing rock remains solid; water only occupies air/fluid.
+            const dropTop = Math.min(H - 1, ground + 1)
+            const bottomY = Math.max(heights[next.x * 0 + ci(next.x, next.z)] + 1, seaLevel + 1)
+            for (let y = bottomY; y <= dropTop; y++) {
+                if (!placeFlowBlock(next.x, y, next.z)) {
+                    // A rock obstruction means the waterfall must stop rather than
+                    // render through an island or leave a suspended water fragment.
+                    break
+                }
+            }
+
+            x = next.x
+            z = next.z
+            ground = next.height
+            incomingHeight = ground + 1
+            if (ground <= seaLevel + 1) break
+            placeFlowBlock(x, incomingHeight, z)
         }
 
         made++
@@ -1221,50 +1258,206 @@ function carveMountainCaves() {
     }
 }
 
+function pruneFloatingArtifacts() {
+    // Tree crowns are allowed to hang above ground, but stray hard blocks (often
+    // remnants of terrain/waterfall carving) must connect to another voxel.
+    for (let x = 1; x < N - 1; x++) {
+        for (let z = 1; z < N - 1; z++) {
+            const ground = heights[ci(x,z)]
+            for (let y = Math.max(1, ground + 1); y < H - 1; y++) {
+                const type = get(x,y,z)
+                if (type === EMPTY || isWaterBlock(type) ||
+                    type === LEAVES || type === PALM_LEAVES || type === DARK_LEAVES) continue
+
+                const supported =
+                    get(x,y-1,z)!==EMPTY || get(x,y+1,z)!==EMPTY ||
+                    get(x-1,y,z)!==EMPTY || get(x+1,y,z)!==EMPTY ||
+                    get(x,y,z-1)!==EMPTY || get(x,y,z+1)!==EMPTY
+                if (!supported) set(x,y,z,EMPTY)
+            }
+        }
+    }
+}
+
 function addTrees() {
-    for (let x = 2; x < N - 2; x++) {
-        for (let z = 2; z < N - 2; z++) {
-            const col = ci(x, z)
-            if (heights[col] <= waterLevels[col]) continue
-            if (desertInfluenceAt(x, z) > 0.38) continue
+    const seaLevel = oceans[0].level
 
-            const h = heights[col]
-            if (get(x, h, z) !== GRASS) continue
-            const treeThreshold = 0.986 + plainsInfluence(x, z) * 0.012
-            if (rand(x, z) <= treeThreshold) continue
+    function hasWaterNearby(x, z, radius) {
+        for (let dx = -radius; dx <= radius; dx++) {
+            for (let dz = -radius; dz <= radius; dz++) {
+                if (dx * dx + dz * dz > radius * radius) continue
+                const nx = x + dx, nz = z + dz
+                if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+                if (heights[ci(nx, nz)] <= seaLevel) return true
+            }
+        }
+        return false
+    }
 
-            const trunk = 3 + Math.floor(rand(x + 47, z + 31) * 2)
-            const top = h + trunk
+    function setIfClear(x, y, z, type) {
+        if (get(x, y, z) === EMPTY) set(x, y, z, type)
+    }
 
-            if (top + 2 >= H) continue
+    function placeCactus(x, z, h) {
+        const height = 2 + Math.floor(rand(x + 3011, z + 3019) * 5)
+        if (h + height + 4 >= H) return
+        for (let y = h + 1; y <= h + height; y++) {
+            if (get(x, y, z) !== EMPTY) return
+        }
+        for (let y = h + 1; y <= h + height; y++) set(x, y, z, CACTUS)
 
-            let clear = true
-            for (let y = h + 1; y <= top; y++) {
-                if (get(x, y, z) !== EMPTY) {
-                    clear = false
-                    break
+        const branchCount = 1 + Math.floor(rand(x + 3023, z + 3037) * 3)
+        const usedDirections = new Set()
+        for (let branch = 0; branch < branchCount; branch++) {
+            let direction = Math.floor(rand(x + 3041 + branch * 7, z + 3049 + branch * 11) * 4)
+            for (let tries = 0; usedDirections.has(direction) && tries < 4; tries++) {
+                direction = (direction + 1) % 4
+            }
+            usedDirections.add(direction)
+            const dirs = [[1,0],[-1,0],[0,1],[0,-1]]
+            const [dx,dz] = dirs[direction]
+            const armY = h + 2 + Math.floor(rand(x + 3061 + branch * 13, z + 3067 + branch * 17) * Math.max(1,height-2))
+            const armLength = 1 + Math.floor(rand(x + 3079 + branch * 19, z + 3083 + branch * 23) * 2)
+            const armRise = 1 + Math.floor(rand(x + 3089 + branch * 29, z + 3109 + branch * 31) * 3)
+
+            for (let d = 1; d <= armLength; d++) {
+                const ax = x + dx * d, az = z + dz * d
+                if (get(ax, armY, az) !== EMPTY) break
+                set(ax, armY, az, CACTUS)
+            }
+            const tipX = x + dx * armLength, tipZ = z + dz * armLength
+            for (let y = armY + 1; y <= Math.min(H - 2, armY + armRise); y++) {
+                if (get(tipX, y, tipZ) !== EMPTY) break
+                set(tipX, y, tipZ, CACTUS)
+            }
+        }
+    }
+
+    function placePalm(x, z, h) {
+        const height = 6 + Math.floor(rand(x + 3137, z + 3163) * 5)
+        const top = h + height
+        if (top + 6 >= H) return
+        for (let y = h + 1; y <= top; y++) {
+            if (get(x, y, z) !== EMPTY) return
+        }
+        for (let y = h + 1; y <= top; y++) set(x, y, z, PALM_WOOD)
+
+        const rotation = rand(x + 3167, z + 3169) * Math.PI * 2
+        const fronds = 8 + Math.floor(rand(x + 3181, z + 3187) * 4)
+        for (let f = 0; f < fronds; f++) {
+            const angle = rotation + f * Math.PI * 2 / fronds
+            const dx = Math.cos(angle), dz = Math.sin(angle)
+            const length = 3 + Math.floor(rand(x + f * 37 + 3191, z + f * 41 + 3203) * 3)
+            for (let d = 1; d <= length; d++) {
+                const px = Math.round(x + dx * d)
+                const pz = Math.round(z + dz * d)
+                const py = top + 1 - Math.floor(d * 0.38)
+                setIfClear(px, py, pz, PALM_LEAVES)
+                if (d >= 2 && d <= length - 1) {
+                    setIfClear(px + Math.round(-dz), py - 1, pz + Math.round(dx), PALM_LEAVES)
+                    setIfClear(px - Math.round(-dz), py - 1, pz - Math.round(dx), PALM_LEAVES)
                 }
             }
-            if (!clear) continue
+        }
 
-            for (let y = h + 1; y <= top; y++) {
-                set(x, y, z, WOOD)
-            }
+        // A few brown coconut blocks tucked beneath the crown.
+        const coconuts = 1 + Math.floor(rand(x + 3217, z + 3221) * 3)
+        for (let c = 0; c < coconuts; c++) {
+            const angle = rotation + c * Math.PI * 2 / coconuts
+            setIfClear(x + Math.round(Math.cos(angle)), top - 1, z + Math.round(Math.sin(angle)), WOOD)
+        }
+    }
 
-            for (let dy = -1; dy <= 1; dy++) {
-                const r = dy === 1 ? 1 : 2
+    function placeNormalTree(x, z, h) {
+        const trunk = 4 + Math.floor(rand(x + 47, z + 31) * 3)
+        const top = h + trunk
+        if (top + 3 >= H) return false
+        for (let y = h + 1; y <= top + 2; y++) {
+            if (get(x, y, z) !== EMPTY) return false
+        }
+        for (let y = h + 1; y <= top; y++) set(x, y, z, WOOD)
 
-                for (let dx = -r; dx <= r; dx++) {
-                    for (let dz = -r; dz <= r; dz++) {
-                        if (r === 2 && Math.abs(dx) === r && Math.abs(dz) === r) continue
-                        if (get(x + dx, top + dy, z + dz) === EMPTY) {
-                            set(x + dx, top + dy, z + dz, LEAVES)
-                        }
-                    }
+        for (let dy = -1; dy <= 1; dy++) {
+            const radius = dy === 1 ? 1 : 2
+            for (let dx = -radius; dx <= radius; dx++) {
+                for (let dz = -radius; dz <= radius; dz++) {
+                    if (radius === 2 && Math.abs(dx) === radius && Math.abs(dz) === radius) continue
+                    setIfClear(x + dx, top + dy, z + dz, LEAVES)
                 }
             }
+        }
+        setIfClear(x, top + 2, z, LEAVES)
+        return true
+    }
 
-            if (get(x, top + 2, z) === EMPTY) set(x, top + 2, z, LEAVES)
+    function placeDarkOak(x, z, h) {
+        if (x + 2 >= N - 1 || z + 2 >= N - 1) return false
+        const baseCols = [[x,z],[x+1,z],[x,z+1],[x+1,z+1]]
+        for (const [tx,tz] of baseCols) {
+            if (heights[ci(tx,tz)] !== h || get(tx,h,tz) !== GRASS) return false
+        }
+
+        const height = 7 + Math.floor(rand(x + 3251, z + 3257) * 5)
+        const top = h + height
+        if (top + 5 >= H) return false
+        for (const [tx,tz] of baseCols) {
+            for (let y=h+1; y<=top+1; y++) if (get(tx,y,tz)!==EMPTY) return false
+        }
+        for (const [tx,tz] of baseCols) for(let y=h+1;y<=top;y++) set(tx,y,tz,DARK_WOOD)
+
+        for (let dy=-2;dy<=2;dy++) {
+            const radius = dy===2 ? 2 : dy===-2 ? 3 : 4
+            for(let dx=-radius;dx<=radius;dx++) {
+                for(let dz=-radius;dz<=radius;dz++) {
+                    if(Math.abs(dx)===radius&&Math.abs(dz)===radius) continue
+                    setIfClear(x+dx,top+dy,z+dz,DARK_LEAVES)
+                }
+            }
+        }
+        for(let dx=0;dx<=1;dx++) for(let dz=0;dz<=1;dz++) setIfClear(x+dx,top+2,z+dz,DARK_LEAVES)
+        return true
+    }
+
+    // Cacti are voxel-shaped saguaros, not single straight columns.
+    for (let x = 3; x < N - 3; x++) {
+        for (let z = 3; z < N - 3; z++) {
+            const col = ci(x,z), h = heights[col]
+            if (get(x,h,z) !== SAND || desertInfluenceAt(x,z) < 0.42) continue
+            if (rand(x + 3299, z + 3301) > 0.018) continue
+            placeCactus(x,z,h)
+        }
+    }
+
+    // Broad forest-noise patches create quiet groves, sparse country and dense woods.
+    for (let x = 3; x < N - 3; x++) {
+        for (let z = 3; z < N - 3; z++) {
+            const col=ci(x,z), h=heights[col]
+            if (h <= seaLevel || get(x,h,z)!==GRASS) continue
+            const desert = desertInfluenceAt(x,z)
+            if (desert > 0.32) continue
+
+            const plains = plainsInfluence(x,z)
+            const forestRegion = noise(x * 0.018 + seed * 0.009, z * 0.018 - seed * 0.007)
+            const treeChance = plains > 0.28
+                ? 0.0025 + forestRegion * 0.010
+                : forestRegion > 0.70 ? 0.040
+                : forestRegion > 0.54 ? 0.021
+                : forestRegion > 0.38 ? 0.007
+                : 0.0014
+            if (rand(x + 3313,z + 3323) > treeChance) continue
+
+            const warmLowland = z / N > 0.48 && z / N < 0.94 && h <= seaLevel + 10
+            const coastal = hasWaterNearby(x,z,7)
+            const tropicalCoast = warmLowland && coastal && !desert && rand(x + 3329,z + 3331) < 0.58
+
+            if (tropicalCoast) {
+                placePalm(x,z,h)
+            } else if (forestRegion > 0.74 && plains < 0.22 && !coastal &&
+                       rand(x + 3337,z + 3343) < 0.20) {
+                if (!placeDarkOak(x,z,h)) placeNormalTree(x,z,h)
+            } else {
+                placeNormalTree(x,z,h)
+            }
         }
     }
 }
@@ -1574,12 +1767,12 @@ function buildChunk(cx, cz) {
                     const neighborZ = z + face.d[2]
                     let neighbor = get(neighborX, y + face.d[1], neighborZ)
 
-                    // Solid-to-solid faces are hidden. At solid/water borders,
-                    // keep the water face and suppress the solid face so falls and
-                    // shorelines remain visible without doubled coplanar faces.
+                    // Water faces render only against air. This prevents water
+                    // from showing through terrain (X-ray effect). Solid faces
+                    // remain visible next to water so the riverbed is opaque.
                     if (isWaterBlock(type)) {
-                        if (isWaterBlock(neighbor)) continue
-                    } else if (neighbor !== EMPTY) {
+                        if (neighbor !== EMPTY) continue
+                    } else if (neighbor !== EMPTY && !isWaterBlock(neighbor)) {
                         continue
                     }
                     const group = groups[type]
@@ -1645,14 +1838,27 @@ function updateChunkLoading(force = false) {
     for (const key of Array.from(chunkMeshes.keys())) {
         if (!wantedKeys.has(key)) unloadChunk(key)
     }
-    for (const chunk of limited) {
-        if (chunkMeshes.has(chunk.key)) continue
-        if (chunkMeshes.size >= MAX_LOADED_CHUNKS) break
-        chunkMeshes.set(chunk.key, buildChunk(chunk.cx, chunk.cz))
-    }
 
+    // Queue missing chunks center-outward. A few chunks mesh each frame so world
+    // changes never freeze for one giant synchronous build.
+    pendingChunkQueue = limited.filter(chunk => !chunkMeshes.has(chunk.key))
     lastChunkCenterX = centerX
     lastChunkCenterZ = centerZ
+}
+
+function processChunkBuildQueue() {
+    let built = 0
+    while (pendingChunkQueue.length && built < MAX_CHUNK_BUILDS_PER_FRAME &&
+           chunkMeshes.size < MAX_LOADED_CHUNKS) {
+        const chunk = pendingChunkQueue.shift()
+        if (!desiredChunkKeys.has(chunk.key) || chunkMeshes.has(chunk.key)) continue
+        chunkMeshes.set(chunk.key, buildChunk(chunk.cx, chunk.cz))
+        built++
+    }
+    if (chunkMeshes.size > 0) {
+        status.textContent = 'Seed: ' + seed + '. Chunks loaded: ' + chunkMeshes.size +
+            '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
+    }
 }
 
 let playerX = N / 2
@@ -1834,18 +2040,17 @@ function getWaterSurface() {
         const bz = Math.floor(playerZ + oz)
         if (bx < 0 || bx >= N || bz < 0 || bz >= N) continue
 
-        const col = ci(bx, bz)
-        const level = waterLevels[col]
-        if (level === EMPTY) continue
+        const lowY = Math.max(0, Math.floor(feetY))
+        const highY = Math.min(H - 1, Math.ceil(feetY + PLAYER_HEIGHT))
+        for (let y = lowY; y <= highY; y++) {
+            if (!isWaterBlock(get(bx, y, bz))) continue
+            const overlapsBody = feetY < y + 1 && feetY + PLAYER_HEIGHT > y
+            if (!overlapsBody) continue
 
-        const waterBottom = heights[col] + 1
-        const waterSurface = level + 1
-        const bodyOverlapsWater =
-            feetY < waterSurface &&
-            feetY + PLAYER_HEIGHT > waterBottom
-
-        if (bodyOverlapsWater) {
-            surface = surface === null ? waterSurface : Math.max(surface, waterSurface)
+            let top = y
+            while (top + 1 < H && isWaterBlock(get(bx, top + 1, bz))) top++
+            surface = surface === null ? top + 1 : Math.max(surface, top + 1)
+            break
         }
     }
 
@@ -1876,31 +2081,30 @@ function updateUnderwaterAtmosphere() {
         return
     }
 
-    const col = ci(bx, bz)
-    const level = waterLevels[col] === EMPTY ? by : waterLevels[col]
-    const depth = Math.max(0, level + 1 - eyeY)
+    const level = getWaterSurface() ?? (waterLevels[ci(bx, bz)] + 1)
+    const depth = Math.max(0, level - eyeY)
     const isFresh = type === FRESH_WATER
 
     if (isFresh) {
-        const d = clamp(depth / 26, 0, 1)
-        scene.fogDensity = 0.005 + Math.min(depth, 28) * 0.00075
+        const d = clamp(depth / 34, 0, 1)
+        scene.fogDensity = 0.0025 + Math.min(depth, 34) * 0.00042
         scene.fogColor = new BABYLON.Color3(
-            0.14 * (1 - d) + 0.045 * d,
-            0.36 * (1 - d) + 0.17 * d,
-            0.49 * (1 - d) + 0.25 * d
+            0.30 * (1 - d) + 0.10 * d,
+            0.59 * (1 - d) + 0.29 * d,
+            0.78 * (1 - d) + 0.46 * d
         )
-        const light = Math.exp(-depth * 0.018)
+        const light = Math.exp(-depth * 0.007)
         hemi.intensity = 0.9 * light
         sun.intensity = 0.5 * light
     } else {
-        const d = clamp(depth / 14, 0, 1)
-        scene.fogDensity = 0.018 + Math.min(depth, 18) * 0.0028
+        const d = clamp(depth / 11, 0, 1)
+        scene.fogDensity = 0.026 + Math.min(depth, 22) * 0.0032
         scene.fogColor = new BABYLON.Color3(
-            0.075 * (1 - d) + 0.008 * d,
-            0.20 * (1 - d) + 0.025 * d,
-            0.38 * (1 - d) + 0.065 * d
+            0.025 * (1 - d) + 0.003 * d,
+            0.105 * (1 - d) + 0.012 * d,
+            0.24 * (1 - d) + 0.038 * d
         )
-        const light = Math.exp(-depth * 0.085)
+        const light = Math.exp(-depth * 0.14)
         hemi.intensity = 0.9 * light
         sun.intensity = 0.5 * light
     }
@@ -2037,6 +2241,7 @@ function generate() {
     meshes = []
     chunkMeshes.clear()
     desiredChunkKeys = new Set()
+    pendingChunkQueue = []
     decorationBuffersByChunk = new Map()
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
@@ -2057,6 +2262,7 @@ function generate() {
     carveSurfaceFissures()
     carveMountainCaves()
     addTrees()
+    pruneFloatingArtifacts()
 
     decorationBuffersByChunk = addGroundDecorations()
 
@@ -2099,7 +2305,7 @@ function generate() {
     syncCamera()
     updateChunkLoading(true)
 
-    status.textContent = 'World ready. Seed: ' + seed + '. Chunks: ' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
+    status.textContent = 'World generated. Seed: ' + seed + '. Loading nearby chunks (' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ')…'
 }
 
 window.addEventListener('keydown', e => {
@@ -2171,6 +2377,7 @@ engine.runRenderLoop(() => {
 
     updatePlayer(dt)
     updateChunkLoading()
+    processChunkBuildQueue()
     updateUnderwaterAtmosphere()
     scene.render()
 })
