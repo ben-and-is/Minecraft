@@ -150,11 +150,12 @@ const materials = colors.map((color, i) => {
     m.backFaceCulling = false
 
     if (i === WATER || i === FRESH_WATER) {
-        // Salt water is darker blue; fresh water is a clearer, greener cyan.
+        // Similar blue hues; freshwater is only slightly lighter but lets
+        // noticeably more light pass through than saltwater.
         m.diffuseColor = i === FRESH_WATER
-            ? new BABYLON.Color3(.22, .72, .72)
-            : new BABYLON.Color3(.12, .38, .78)
-        m.alpha = i === FRESH_WATER ? .66 : .76
+            ? new BABYLON.Color3(.15, .42, .73)
+            : new BABYLON.Color3(.12, .36, .68)
+        m.alpha = i === FRESH_WATER ? .43 : .74
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES) {
@@ -287,38 +288,38 @@ function createWorldFeatures() {
     islands = [
         {
             name: 'Main Island',
-            x: N * vary(1001, 0.63, 0.04), z: N * vary(1003, 0.39, 0.04),
-            rx: scale(1007, 72, 0.22), rz: scale(1009, 62, 0.22),
+            x: N * vary(1001, 0.64, 0.035), z: N * vary(1003, 0.39, 0.035),
+            rx: scale(1007, 80, 0.18), rz: scale(1009, 70, 0.18),
             peak: scale(1013, 25, 0.34), warp: scale(1019, 20, 0.55), edgeScale: vary(1021, 0.90, 0.28)
         },
         {
             name: 'Southwest Desert Country',
-            x: N * vary(1031, 0.30, 0.025), z: N * vary(1033, 0.72, 0.025),
-            rx: scale(1039, 66, 0.16), rz: scale(1049, 58, 0.16),
+            x: N * vary(1031, 0.34, 0.02), z: N * vary(1033, 0.69, 0.025),
+            rx: scale(1039, 74, 0.14), rz: scale(1049, 64, 0.14),
             peak: scale(1051, 22, 0.32), warp: scale(1061, 18, 0.58), edgeScale: vary(1063, 0.84, 0.28)
         },
         {
             name: 'Northwest Island',
             x: N * vary(1069, 0.19, 0.035), z: N * vary(1087, 0.19, 0.035),
-            rx: scale(1091, 31, 0.22), rz: scale(1093, 28, 0.22),
+            rx: scale(1091, 35, 0.20), rz: scale(1093, 31, 0.20),
             peak: scale(1097, 15, 0.30), warp: scale(1103, 8, 0.65), edgeScale: vary(1109, 0.80, 0.26)
         },
         {
             name: 'Northeast Island',
             x: N * vary(1117, 0.77, 0.035), z: N * vary(1123, 0.19, 0.035),
-            rx: scale(1129, 35, 0.20), rz: scale(1151, 29, 0.22),
+            rx: scale(1129, 40, 0.18), rz: scale(1151, 33, 0.18),
             peak: scale(1153, 16, 0.30), warp: scale(1163, 10, 0.65), edgeScale: vary(1171, 0.80, 0.26)
         },
         {
             name: 'Southeast Island',
             x: N * vary(1181, 0.76, 0.035), z: N * vary(1187, 0.76, 0.035),
-            rx: scale(1193, 38, 0.20), rz: scale(1201, 33, 0.22),
+            rx: scale(1193, 43, 0.18), rz: scale(1201, 37, 0.18),
             peak: scale(1213, 17, 0.30), warp: scale(1217, 9, 0.65), edgeScale: vary(1223, 0.80, 0.26)
         },
         {
             name: 'North Shoal',
             x: N * vary(1229, 0.43, 0.04), z: N * vary(1231, 0.17, 0.035),
-            rx: scale(1237, 22, 0.24), rz: scale(1249, 18, 0.24),
+            rx: scale(1237, 25, 0.20), rz: scale(1249, 21, 0.20),
             peak: scale(1259, 13, 0.30), warp: scale(1277, 6, 0.70), edgeScale: vary(1279, 0.75, 0.28)
         }
     ]
@@ -365,8 +366,8 @@ function createWorldFeatures() {
     if (desertRoll > 0.64) {
         deserts.push({
             name: 'Great Desert',
-            x: N * vary(1901, 0.30, 0.035), z: N * vary(1907, 0.72, 0.035),
-            rx: scale(1913, 52, 0.20), rz: scale(1919, 43, 0.20),
+            x: N * vary(1901, 0.34, 0.025), z: N * vary(1907, 0.69, 0.025),
+            rx: scale(1913, 58, 0.16), rz: scale(1919, 48, 0.16),
             warp: scale(1921, 17, 0.45), edgeScale: vary(1931, 1.20, 0.24)
         })
     }
@@ -414,31 +415,68 @@ function createWorldFeatures() {
     const mountainRoll = rand(1481, 1483)
     mountains = []
 
-    // Distinct seeds get distinct rare-mountain outcomes, positions and profiles.
+    const chooseHostIsland = key => {
+        const hostIndex = Math.floor(rand(key, key + 3) * Math.min(5, islands.length))
+        return islands[hostIndex]
+    }
+    const placeNearIsland = (host, xKey, zKey, fraction = 0.30) => ({
+        x: host.x + (rand(xKey, xKey + 7) - 0.5) * host.rx * fraction,
+        z: host.z + (rand(zKey, zKey + 11) - 0.5) * host.rz * fraction
+    })
+
+    // Mountains remain rare and now occupy only part of their host island.
+    // Footprints range from tall, small plateaus to larger broken escarpments.
     if (mountainRoll < 0.04) {
-        const angle = rand(1487, 1489) * Math.PI * 2
+        const host = chooseHostIsland(1485)
+        const center = placeNearIsland(host, 1493, 1499, 0.34)
         mountains.push({
             name: 'Broken Escarpment',
             kind: 'cliff',
-            x: N * vary(1493, 0.57, 0.12), z: N * vary(1499, 0.37, 0.12),
-            rx: scale(1511, 48, 0.26), rz: scale(1523, 50, 0.26), peak: scale(1531, 48, 0.18),
-            slope: vary(1543, 0.78, 0.22), warp: scale(1549, 27, 0.50),
-            edgeScale: vary(1553, 1.25, 0.30), roughness: vary(1559, 0.24, 0.20),
-            cliffAngle: angle,
-            caveCount: 3 + Math.floor(rand(1567, 1571) * 5), ridgeAmp: scale(1573, 5, 0.60)
+            x: center.x, z: center.z,
+            rx: scale(1511, 34, 0.48), rz: scale(1523, 38, 0.48),
+            peak: scale(1531, 42, 0.22),
+            slope: 0.92 + rand(1543, 1547) * 0.28,
+            warp: scale(1549, 20, 0.48),
+            edgeScale: 1.12 + rand(1553, 1559) * 0.34,
+            roughness: 0.18 + rand(1561, 1567) * 0.18,
+            cliffAngle: rand(1569, 1571) * Math.PI * 2,
+            caveCount: 3 + Math.floor(rand(1573, 1577) * 5),
+            ridgeAmp: scale(1581, 5, 0.65)
         })
     } else if (mountainRoll < 0.065) {
-        const angle = rand(1579, 1583) * Math.PI * 2
-        mountains.push({
-            name: 'Great Mountain',
-            kind: 'mountain',
-            x: N * vary(1589, 0.58, 0.12), z: N * vary(1597, 0.36, 0.12),
-            rx: scale(1601, 50, 0.24), rz: scale(1607, 53, 0.24), peak: scale(1609, 46, 0.20),
-            slope: vary(1613, 0.68, 0.22), warp: scale(1619, 22, 0.55),
-            edgeScale: vary(1621, 1.18, 0.30), roughness: vary(1627, 0.20, 0.30),
-            cliffAngle: angle,
-            caveCount: 2 + Math.floor(rand(1637, 1641) * 4), ridgeAmp: scale(6427, 4, 0.70)
-        })
+        const host = chooseHostIsland(1583)
+        const center = placeNearIsland(host, 1589, 1597, 0.30)
+        const styleRoll = rand(1601, 1607)
+
+        if (styleRoll < 0.42) {
+            mountains.push({
+                name: 'High Small Plateau',
+                kind: 'plateau',
+                x: center.x, z: center.z,
+                rx: scale(1609, 17, 0.42), rz: scale(1613, 15, 0.42),
+                peak: scale(1619, 62, 0.18),
+                slope: 1.18, warp: scale(1621, 8, 0.65),
+                edgeScale: scale(1627, 1.22, 0.28), roughness: 0.16,
+                cliffAngle: rand(1637, 1641) * Math.PI * 2,
+                caveCount: 2 + Math.floor(rand(1643, 1647) * 4),
+                ridgeAmp: scale(1657, 3.5, 0.7)
+            })
+        } else {
+            mountains.push({
+                name: 'Great Mountain',
+                kind: 'mountain',
+                x: center.x, z: center.z,
+                rx: scale(1663, 34, 0.34), rz: scale(1667, 38, 0.34),
+                peak: scale(1669, 43, 0.22),
+                slope: 0.86 + rand(1693, 1697) * 0.28,
+                warp: scale(1699, 18, 0.55),
+                edgeScale: 1.08 + rand(1709, 1711) * 0.30,
+                roughness: 0.18 + rand(1721, 1723) * 0.2,
+                cliffAngle: rand(1727, 1733) * Math.PI * 2,
+                caveCount: 2 + Math.floor(rand(1741, 1747) * 4),
+                ridgeAmp: scale(1753, 4, 0.7)
+            })
+        }
     }
 
     hillFeatures = [
@@ -600,9 +638,16 @@ function mountainRiseAt(x, z) {
         const baseProfile = Math.pow(weight, m.slope || 0.78)
         let profile = baseProfile
 
-        if (m.kind === 'cliff') {
-            // One side has an irregular escarpment; the back and flanks remain
-            // sloped so the whole mountain doesn't become a flat-topped wall.
+        if (m.kind === 'plateau') {
+            const capNoise =
+                (noise(x * 0.13 + m.x, z * 0.13 + m.z) - 0.5) * 0.08
+            if (distance < 0.60) {
+                profile = 0.94 + capNoise
+            } else {
+                const rim = clamp((1.16 - distance) / 0.56, 0, 1)
+                profile = Math.pow(rim, 1.20) * 0.94
+            }
+        } else if (m.kind === 'cliff') {
             const dx = (x - m.x) / m.rx
             const dz = (z - m.z) / m.rz
             const angle = Math.atan2(dz, dx)
@@ -905,6 +950,73 @@ function voxelize() {
                 if (get(x, y, z) === EMPTY) set(x, y, z, waterType)
             }
         }
+    }
+}
+
+function addWaterfalls() {
+    const seaLevel = oceans[0].level
+    const fallCount = 3 + Math.floor(rand(2309, 2311) * 4)
+    let made = 0
+
+    for (let fallIndex = 0; fallIndex < fallCount; fallIndex++) {
+        let chosen = null
+
+        for (let attempt = 0; attempt < 220 && !chosen; attempt++) {
+            const host = islands[Math.floor(rand(2317 + fallIndex * 31 + attempt * 7,
+                2327 + fallIndex * 37 + attempt * 11) * Math.min(5, islands.length))]
+            const x = clamp(Math.round(host.x + (rand(2333 + attempt * 13, 2339 + fallIndex * 17) - 0.5) * host.rx * 1.15), 3, N - 4)
+            const z = clamp(Math.round(host.z + (rand(2341 + attempt * 19, 2347 + fallIndex * 23) - 0.5) * host.rz * 1.15), 3, N - 4)
+            const high = heights[ci(x, z)]
+            if (high <= seaLevel + 7 || islandInfluenceAt(x, z) < 0.28) continue
+
+            let best = null
+            for (let radius = 1; radius <= 7; radius++) {
+                for (let direction = 0; direction < 16; direction++) {
+                    const angle = direction * Math.PI * 2 / 16 +
+                        (rand(2351 + attempt * 17, 2357 + fallIndex * 29) - 0.5) * 0.3
+                    const ex = clamp(Math.round(x + Math.cos(angle) * radius), 1, N - 2)
+                    const ez = clamp(Math.round(z + Math.sin(angle) * radius), 1, N - 2)
+                    const low = heights[ci(ex, ez)]
+                    const drop = high - low
+                    if (drop < 4) continue
+                    const score = drop - radius * 0.25
+                    if (!best || score > best.score) best = { x: ex, z: ez, height: low, score, radius }
+                }
+            }
+
+            if (best) chosen = { x, z, high, endX: best.x, endZ: best.z, low: best.height }
+        }
+
+        if (!chosen) continue
+        const dx = chosen.endX - chosen.x, dz = chosen.endZ - chosen.z
+        const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) * 1.5))
+        const width = 1 + Math.floor(rand(2371 + fallIndex * 13, 2377 + fallIndex * 19) * 3)
+        const extraDrop = 1 + rand(2381 + fallIndex * 23, 2383 + fallIndex * 29) * 4
+
+        for (let step = 0; step <= steps; step++) {
+            const t = step / steps
+            const x = clamp(Math.round(chosen.x + dx * t), 1, N - 2)
+            const z = clamp(Math.round(chosen.z + dz * t), 1, N - 2)
+            const ground = heights[ci(x, z)]
+            const waterTop = Math.max(
+                ground + 1,
+                Math.round(chosen.high + 1 - (chosen.high - chosen.low + extraDrop) * t)
+            )
+
+            for (let side = -Math.floor(width / 2); side <= Math.floor(width / 2); side++) {
+                const sideX = clamp(x + (Math.abs(dx) >= Math.abs(dz) ? 0 : side), 1, N - 2)
+                const sideZ = clamp(z + (Math.abs(dx) >= Math.abs(dz) ? side : 0), 1, N - 2)
+                const sideGround = heights[ci(sideX, sideZ)]
+                const sideTop = Math.max(sideGround + 1, waterTop)
+                for (let y = sideGround + 1; y <= sideTop; y++) {
+                    if (get(sideX, y, sideZ) === EMPTY || isWaterBlock(get(sideX, y, sideZ))) {
+                        set(sideX, y, sideZ, FRESH_WATER)
+                    }
+                }
+            }
+        }
+
+        made++
     }
 }
 
@@ -1735,6 +1847,60 @@ function getWaterSurface() {
     return surface
 }
 
+function updateUnderwaterAtmosphere() {
+    const skyFog = new BABYLON.Color3(.53, .81, .92)
+    const eyeY = feetY + EYE_HEIGHT
+    const bx = Math.floor(playerX)
+    const bz = Math.floor(playerZ)
+    const by = Math.floor(eyeY)
+
+    if (bx < 0 || bx >= N || bz < 0 || bz >= N || by < 0 || by >= H) {
+        scene.fogDensity = 0.012
+        scene.fogColor = skyFog
+        hemi.intensity = 0.9
+        sun.intensity = 0.5
+        return
+    }
+
+    const type = get(bx, by, bz)
+    if (!isWaterBlock(type)) {
+        scene.fogDensity = 0.012
+        scene.fogColor = skyFog
+        hemi.intensity = 0.9
+        sun.intensity = 0.5
+        return
+    }
+
+    const col = ci(bx, bz)
+    const level = waterLevels[col] === EMPTY ? by : waterLevels[col]
+    const depth = Math.max(0, level + 1 - eyeY)
+    const isFresh = type === FRESH_WATER
+
+    if (isFresh) {
+        const d = clamp(depth / 26, 0, 1)
+        scene.fogDensity = 0.005 + Math.min(depth, 28) * 0.00075
+        scene.fogColor = new BABYLON.Color3(
+            0.14 * (1 - d) + 0.045 * d,
+            0.36 * (1 - d) + 0.17 * d,
+            0.49 * (1 - d) + 0.25 * d
+        )
+        const light = Math.exp(-depth * 0.018)
+        hemi.intensity = 0.9 * light
+        sun.intensity = 0.5 * light
+    } else {
+        const d = clamp(depth / 14, 0, 1)
+        scene.fogDensity = 0.018 + Math.min(depth, 18) * 0.0028
+        scene.fogColor = new BABYLON.Color3(
+            0.075 * (1 - d) + 0.008 * d,
+            0.20 * (1 - d) + 0.025 * d,
+            0.38 * (1 - d) + 0.065 * d
+        )
+        const light = Math.exp(-depth * 0.085)
+        hemi.intensity = 0.9 * light
+        sun.intensity = 0.5 * light
+    }
+}
+
 function updatePlayer(dt) {
     dt = Math.min(dt, .05)
 
@@ -1882,6 +2048,7 @@ function generate() {
     createPonds()
     createRiverChannels()
     voxelize()
+    addWaterfalls()
     carveSurfaceFissures()
     carveMountainCaves()
     addTrees()
@@ -1999,6 +2166,7 @@ engine.runRenderLoop(() => {
 
     updatePlayer(dt)
     updateChunkLoading()
+    updateUnderwaterAtmosphere()
     scene.render()
 })
 
