@@ -116,8 +116,8 @@ scene.collisionsEnabled = false
 
 // A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
 const N = 256, H = 96, CS = 16, YOFF = -5
-const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_WOOD = 8, PALM_LEAVES = 9, DARK_WOOD = 10, DARK_LEAVES = 11, CACTUS = 12
-const MCOUNT = 13
+const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_WOOD = 8, PALM_LEAVES = 9, DARK_WOOD = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
+const MCOUNT = 14
 const MAX_CHUNK_BUILDS_PER_FRAME = 3
 const MAX_LOADED_CHUNKS = 400
 const CHUNK_RENDER_RADIUS = 4
@@ -143,7 +143,7 @@ const sun = new BABYLON.DirectionalLight(
 )
 sun.intensity = .5
 
-const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0', '#d9c27a', '#6ebfff', '#997346', '#2f7849', '#3b2b22', '#24452c', '#278b43']
+const colors = ['#65ad43', '#80502e', '#858585', '#76502e', '#347b35', '#398ed0', '#d9c27a', '#6ebfff', '#997346', '#2f7849', '#3b2b22', '#24452c', '#278b43', '#38552a']
 const materials = colors.map((color, i) => {
     const m = new BABYLON.StandardMaterial('mat' + i, scene)
     m.diffuseColor = BABYLON.Color3.FromHexString(color)
@@ -253,6 +253,10 @@ function set(x, y, z, t) {
     }
 }
 
+function isGrassBlock(type) {
+    return type === GRASS || type === DARK_GRASS
+}
+
 function isWaterBlock(type) {
     return type === WATER || type === FRESH_WATER
 }
@@ -325,6 +329,20 @@ function createWorldFeatures() {
             peak: scale(1259, 13, 0.30), warp: scale(1277, 6, 0.70), edgeScale: vary(1279, 0.75, 0.28)
         }
     ]
+
+    // Some seeds gain an additional smaller island, making the number of landmasses vary.
+    if (rand(1283, 1289) > 0.48) {
+        islands.push({
+            name: 'Lost Isle',
+            x: N * (0.28 + rand(1291, 1297) * 0.44),
+            z: N * (0.25 + rand(1301, 1303) * 0.50),
+            rx: scale(1307, 22, 0.38),
+            rz: scale(1319, 19, 0.42),
+            peak: scale(1321, 12, 0.34),
+            warp: scale(1327, 7, 0.70),
+            edgeScale: vary(1329, 0.86, 0.34)
+        })
+    }
 
     ponds = [
         {
@@ -491,6 +509,67 @@ function createWorldFeatures() {
         { x: N * vary(823, 0.60, 0.12), z: N * vary(827, 0.46, 0.12), rx: scale(829, 23, 0.35), rz: scale(839, 19, 0.35) },
         { x: N * vary(853, 0.35, 0.10), z: N * vary(857, 0.68, 0.10), rx: scale(859, 20, 0.35), rz: scale(863, 16, 0.35) }
     ]
+
+
+    // A seed now rearranges the islands themselves, including their dimensions,
+    // rather than merely repainting noise over nearly fixed coordinates.
+    const layoutTargets = []
+    const layoutAnchors = islands.map((island, i) => {
+        const oldX = island.x, oldZ = island.z
+        island.rx *= 0.82 + rand(4109 + i * 17, 4111 + i * 19) * 0.40
+        island.rz *= 0.82 + rand(4127 + i * 23, 4129 + i * 29) * 0.40
+        island.peak *= 0.78 + rand(4133 + i * 31, 4139 + i * 37) * 0.44
+        island.warp *= 0.70 + rand(4153 + i * 41, 4157 + i * 43) * 0.60
+        const minX = island.rx * 1.12 + 3, maxX = N - island.rx * 1.12 - 3
+        const minZ = island.rz * 1.12 + 3, maxZ = N - island.rz * 1.12 - 3
+        let best = null, bestSeparation = -Infinity
+        // Pick the candidate that best spreads islands apart. The candidates
+        // are seed-specific, so broad geography changes between world generations.
+        for (let attempt = 0; attempt < 18; attempt++) {
+            const candidateX = minX + rand(4177 + i * 47 + attempt * 13, 4181 + i * 53 + attempt * 17) * (maxX - minX)
+            const candidateZ = minZ + rand(4201 + i * 59 + attempt * 19, 4211 + i * 61 + attempt * 23) * (maxZ - minZ)
+            let closest = Infinity
+            for (const placed of layoutTargets) {
+                const dx = (candidateX - placed.x) / (island.rx + placed.rx)
+                const dz = (candidateZ - placed.z) / (island.rz + placed.rz)
+                closest = Math.min(closest, Math.hypot(dx, dz))
+            }
+            const separation = layoutTargets.length ? closest : 1
+            if (separation > bestSeparation) { bestSeparation = separation; best = { x: candidateX, z: candidateZ } }
+        }
+        island.x = best.x
+        island.z = best.z
+        layoutTargets.push({ x: island.x, z: island.z, rx: island.rx, rz: island.rz })
+        return { x: oldX, z: oldZ, rx: island.rx, rz: island.rz, dx: island.x - oldX, dz: island.z - oldZ }
+    })
+
+    function warpLayoutPoint(point) {
+        let weightedX = 0, weightedZ = 0, totalWeight = 0
+        let nearest = null, nearestDistance = Infinity
+        for (const anchor of layoutAnchors) {
+            const dx = (point.x - anchor.x) / (anchor.rx * 1.10)
+            const dz = (point.z - anchor.z) / (anchor.rz * 1.10)
+            const distance = dx * dx + dz * dz
+            if (distance < nearestDistance) { nearestDistance = distance; nearest = anchor }
+            const weight = Math.exp(-2.0 * distance)
+            weightedX += anchor.dx * weight
+            weightedZ += anchor.dz * weight
+            totalWeight += weight
+        }
+        const dx = totalWeight > 0.035 ? weightedX / totalWeight : nearest.dx * 0.45
+        const dz = totalWeight > 0.035 ? weightedZ / totalWeight : nearest.dz * 0.45
+        point.x = clamp(point.x + dx, 4, N - 5)
+        point.z = clamp(point.z + dz, 4, N - 5)
+    }
+
+    // Keep nearby lakes, deserts, hills, forest zones and fissures travelling with their host region.
+    for (const group of [ponds, deserts, mountains, hillFeatures, plains, oceanRifts, surfaceFissures]) {
+        for (const feature of group) {
+            warpLayoutPoint(feature)
+            if (feature.riverPath) for (const point of feature.riverPath) warpLayoutPoint(point)
+        }
+    }
+
 }
 
 function plainsInfluence(x, z) {
@@ -506,6 +585,11 @@ function plainsInfluence(x, z) {
     }
 
     return influence
+}
+
+function isDarkOakBiomeAt(x, z) {
+    const biomeNoise = noise(x * 0.024 + seed * 0.011 + 73, z * 0.024 - seed * 0.017 + 29)
+    return biomeNoise > 0.61 && plainsInfluence(x, z) < 0.56 && desertInfluenceAt(x, z) < 0.32
 }
 
 // Warp and perturb ellipse distance so shorelines and mountain footprints have
@@ -927,7 +1011,7 @@ function voxelize() {
             for (let y = 0; y <= h; y++) {
                 let type
                 if (y === h) {
-                    type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : GRASS))
+                    type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : (isDarkOakBiomeAt(x, z) ? DARK_GRASS : GRASS)))
                 } else if (desert && y >= h - 4) {
                     type = SAND
                 } else if (beach && y >= h - 3) {
@@ -979,7 +1063,7 @@ function addWaterfalls() {
             const z = clamp(Math.round(host.z + (rand(2341 + attempt * 19, 2347 + fallIndex * 23) - 0.5) * host.rz * 1.20), 2, N - 3)
             const high = heights[ci(x, z)]
             if (high < seaLevel + 7 || desertInfluenceAt(x, z) > 0.45) continue
-            if (get(x, high, z) !== GRASS && get(x, high, z) !== STONE) continue
+            if (!isGrassBlock(get(x, high, z)) && get(x, high, z) !== STONE) continue
 
             let best = null
             for (let dz = -1; dz <= 1; dz++) {
@@ -1399,7 +1483,7 @@ function addTrees() {
         if (x + 2 >= N - 1 || z + 2 >= N - 1) return false
         const baseCols = [[x,z],[x+1,z],[x,z+1],[x+1,z+1]]
         for (const [tx,tz] of baseCols) {
-            if (heights[ci(tx,tz)] !== h || get(tx,h,tz) !== GRASS) return false
+            if (heights[ci(tx,tz)] !== h || !isGrassBlock(get(tx,h,tz))) return false
         }
 
         const height = 7 + Math.floor(rand(x + 3251, z + 3257) * 5)
@@ -1437,18 +1521,20 @@ function addTrees() {
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
             const col=ci(x,z), h=heights[col]
-            if (h <= seaLevel || get(x,h,z)!==GRASS) continue
+            if (h <= seaLevel || !isGrassBlock(get(x,h,z))) continue
             const desert = desertInfluenceAt(x,z)
             if (desert > 0.32) continue
 
             const plains = plainsInfluence(x,z)
+            const inDarkOakBiome = isDarkOakBiomeAt(x, z)
             const forestRegion = noise(x * 0.018 + seed * 0.009, z * 0.018 - seed * 0.007)
-            const treeChance = plains > 0.28
+            const baseTreeChance = plains > 0.28
                 ? 0.0025 + forestRegion * 0.010
                 : forestRegion > 0.70 ? 0.040
                 : forestRegion > 0.54 ? 0.021
                 : forestRegion > 0.38 ? 0.007
                 : 0.0014
+            const treeChance = inDarkOakBiome ? 0.050 + forestRegion * 0.010 : baseTreeChance * 0.90
             if (rand(x + 3313,z + 3323) > treeChance) continue
 
             const warmLowland = z / N > 0.48 && z / N < 0.94 && h <= seaLevel + 10
@@ -1457,8 +1543,10 @@ function addTrees() {
 
             if (tropicalCoast) {
                 placePalm(x,z,h)
+            } else if (inDarkOakBiome && rand(x + 3337,z + 3343) < 0.72) {
+                if (!placeDarkOak(x,z,h)) placeNormalTree(x,z,h)
             } else if (forestRegion > 0.74 && plains < 0.22 && !coastal &&
-                       rand(x + 3337,z + 3343) < 0.20) {
+                       rand(x + 3347,z + 3359) < 0.20) {
                 if (!placeDarkOak(x,z,h)) placeNormalTree(x,z,h)
             } else {
                 placeNormalTree(x,z,h)
@@ -1673,14 +1761,18 @@ function addGroundDecorations() {
             if (desertInfluenceAt(x, z) > 0.38) continue
 
             const groundY = heights[col]
-            if (get(x, groundY, z) !== GRASS || get(x, groundY + 1, z) !== EMPTY) continue
+            if (!isGrassBlock(get(x, groundY, z)) || get(x, groundY + 1, z) !== EMPTY) continue
             useBuffersForColumn(x, z)
 
             const roll = rand(x + 307, z + 811)
             const flatness = plainsInfluence(x, z)
-            const grassLimit = 0.20 * (1 - flatness * 0.82)
-            const flowerLimit = grassLimit + 0.035 * (1 - flatness * 0.80)
-            const mushroomLimit = flowerLimit + 0.008 * (1 - flatness * 0.65)
+            const vegetationSignal = noise(x * 0.028 + seed * 0.007 + 17, z * 0.028 - seed * 0.009 - 29)
+            let richness = clamp((vegetationSignal - 0.44) * 2.0, 0, 1)
+            if (isDarkOakBiomeAt(x, z)) richness = Math.max(richness, 0.88)
+            richness *= 1 - flatness * 0.58
+            const grassLimit = 0.035 + richness * 0.105
+            const flowerLimit = grassLimit + 0.003 + richness * 0.012
+            const mushroomLimit = flowerLimit + 0.0005 + richness * 0.0025
             const px = x + 0.5 + (rand(x + 97, z + 131) - 0.5) * 0.36
             const pz = z + 0.5 + (rand(x + 139, z + 173) - 0.5) * 0.36
             const py = groundY + 1
