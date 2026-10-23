@@ -936,7 +936,7 @@ function createPonds() {
                     if (distance > searchRadius) continue
                     const col = ci(x, z)
                     const landHeight = heights[col]
-                    if (landHeight < minimumLandHeight || islandInfluenceAt(x, z) < 0.52) continue
+                    if (landHeight < minimumLandHeight || islandInfluenceAt(x, z) < 0.72) continue
 
                     const elevationPenalty = isHighland
                         ? Math.max(0, seaLevel + 14 - landHeight) * 1.8
@@ -2332,7 +2332,7 @@ function findGround(x, z) {
     return 10
 }
 
-function syncCamera(dt = 1 / 60) {
+function syncCamera(dt = 0) {
     const targetEyeHeight = currentEyeHeight()
     const blend = 1 - Math.exp(-Math.max(0, Math.min(dt, 0.1)) * 12)
     cameraEyeHeight += (targetEyeHeight - cameraEyeHeight) * blend
