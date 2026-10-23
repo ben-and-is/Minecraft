@@ -189,6 +189,7 @@ let meshes = []
 let chunkMeshes = new Map()
 let desiredChunkKeys = new Set()
 let pendingChunkQueue = []
+let chunkLoadStatusActive = false
 let decorationBuffersByChunk = new Map()
 let lastChunkCenterX = -1
 let lastChunkCenterZ = -1
@@ -1320,12 +1321,16 @@ function addTrees() {
             const armLength = 1 + Math.floor(rand(x + 3079 + branch * 19, z + 3083 + branch * 23) * 2)
             const armRise = 1 + Math.floor(rand(x + 3089 + branch * 29, z + 3109 + branch * 31) * 3)
 
+            let actualEnd = 0
             for (let d = 1; d <= armLength; d++) {
                 const ax = x + dx * d, az = z + dz * d
                 if (get(ax, armY, az) !== EMPTY) break
                 set(ax, armY, az, CACTUS)
+                actualEnd = d
             }
-            const tipX = x + dx * armLength, tipZ = z + dz * armLength
+            // Only grow the upright arm from a horizontal segment that was placed.
+            if (actualEnd === 0) continue
+            const tipX = x + dx * actualEnd, tipZ = z + dz * actualEnd
             for (let y = armY + 1; y <= Math.min(H - 2, armY + armRise); y++) {
                 if (get(tipX, y, tipZ) !== EMPTY) break
                 set(tipX, y, tipZ, CACTUS)
@@ -1855,9 +1860,19 @@ function processChunkBuildQueue() {
         chunkMeshes.set(chunk.key, buildChunk(chunk.cx, chunk.cz))
         built++
     }
-    if (chunkMeshes.size > 0) {
-        status.textContent = 'Seed: ' + seed + '. Chunks loaded: ' + chunkMeshes.size +
-            '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
+
+    if (pendingChunkQueue.length > 0) {
+        chunkLoadStatusActive = true
+        status.textContent = 'Seed: ' + seed + '. Rendering nearby chunks: ' +
+            chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
+    } else if (chunkLoadStatusActive) {
+        chunkLoadStatusActive = false
+        status.textContent = creativeFlying
+            ? 'Creative flight ON. Space: rise, C: descend, horizontal speed x2.'
+            : mouseLocked
+                ? 'Mouse captured. Press Esc to release.'
+                : 'World ready. Seed: ' + seed + '. Chunks: ' + chunkMeshes.size +
+                    '/' + MAX_LOADED_CHUNKS + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
     }
 }
 
@@ -2242,6 +2257,7 @@ function generate() {
     chunkMeshes.clear()
     desiredChunkKeys = new Set()
     pendingChunkQueue = []
+    chunkLoadStatusActive = true
     decorationBuffersByChunk = new Map()
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
@@ -2299,6 +2315,8 @@ function generate() {
     verticalVelocity = 0
     grounded = true
     jumpQueued = false
+    creativeFlying = false
+    lastSpaceTapTime = 0
     autoStep = null
     yaw = 0
     pitch = 0
