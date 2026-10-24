@@ -1193,10 +1193,13 @@ function updateWaterPhysics(dt) {
 
         const above = y + 1 < H && isWaterBlock(get(x, y + 1, z))
         let sideFeed = false
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            if (isWaterBlock(get(x + dx, y, z))) {
-                sideFeed = true
-                break
+        for (let dz = -1; dz <= 1 && !sideFeed; dz++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dz === 0) continue
+                if (isWaterBlock(get(x + dx, y, z + dz))) {
+                    sideFeed = true
+                    break
+                }
             }
         }
 
