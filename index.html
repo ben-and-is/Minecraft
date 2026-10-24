@@ -214,8 +214,6 @@ const RUN_SPEED = 9.0
 const JUMP_SPEED = 8.0
 const GRAVITY = 22
 const WATER_GRAVITY = 5.0
-const WATER_BUOYANCY = 8.0
-const WATER_DRAG = 3.0
 const SWIM_ACCELERATION = 24
 const MAX_SWIM_SPEED = 5.0
 const MAX_WATER_HORIZONTAL_SPEED = 7.2
@@ -1309,14 +1307,12 @@ function carveSurfaceFissures() {
                 const verticalNoise = (noise(x * 0.15 + fissure.phase, z * 0.15 + seed) - 0.5) * 5.0
                 const depth = fissure.depth + verticalNoise + centerChamber * 9
                 const depthCutoff = Math.max(seaLevel + 1, Math.floor(top - depth))
-                const deepRatio = (top - depthCutoff) > 0 ? 1 : 0
 
                 for (let y = depthCutoff; y <= top; y++) {
                     const down = (top - y) / Math.max(1, top - depthCutoff)
                     const widthNoise = (noise(x * 0.20 + fissure.phase, z * 0.20 + fissure.angle) - 0.5) * 1.0
                     const chamberWidth = centerChamber * 2.4
                     const localWidth = Math.max(0.55, fissure.width + down * 1.8 + widthNoise + chamberWidth)
-                    const verticalWobble = (noise(along * 0.07 + fissure.phase, y * 0.12 + z * 0.04) - 0.5) * 1.4
                     const caveHeadroom = down > 0.58 && Math.abs(lateral) < localWidth + 1.3
                     if (Math.abs(lateral) < localWidth && (caveHeadroom || Math.abs(lateral) < localWidth * 0.78) &&
                         get(x, y, z) !== EMPTY && !isWaterBlock(get(x, y, z))) {
@@ -1438,7 +1434,6 @@ function carveMountainCaves() {
             const chamberSide = (rand(caveKey + 1061, caveKey + 1063) - 0.5) * sideBend
             const chamberX = mouthX + inwardX * chamberAlong + sideX * chamberSide
             const chamberZ = mouthZ + inwardZ * chamberAlong + sideZ * chamberSide
-            const chamberSurface = heights[ci(clamp(Math.round(chamberX), 1, N - 2), clamp(Math.round(chamberZ), 1, N - 2))]
             const chamberY = centerY + chamberAlong * verticalSlope +
                 Math.sin(chamberAlong * 0.09 + phase) * 1.7
             const radiusAlong = 7 + rand(caveKey + 1069, caveKey + 1087) * 7
@@ -2488,7 +2483,6 @@ function updatePlayer(dt) {
     horizontalVelocityX += (desiredVX - horizontalVelocityX) * velocityBlend
     horizontalVelocityZ += (desiredVZ - horizontalVelocityZ) * velocityBlend
 
-    const previousX = playerX, previousZ = playerZ
     moveHorizontal(horizontalVelocityX * dt, horizontalVelocityZ * dt)
     if (autoStep) {
         horizontalVelocityX = 0
@@ -2496,7 +2490,6 @@ function updatePlayer(dt) {
         syncCamera(dt)
         return
     }
-    const horizontalSpeed = Math.hypot(playerX - previousX, playerZ - previousZ) / Math.max(dt, EPS)
 
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
