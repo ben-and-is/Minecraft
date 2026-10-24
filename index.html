@@ -233,7 +233,6 @@ let verticalVelocity = 0
 let cameraEyeHeight = EYE_HEIGHT
 let horizontalVelocityX = 0
 let horizontalVelocityZ = 0
-let waterDiveTargetDepth = 0
 let waterMotionSpeed = 0
 let grounded = false
 let yaw = 0
@@ -2632,8 +2631,8 @@ function updatePlayer(dt) {
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
 
-    // Space has a queued press so landing on the ground reliably triggers a jump.
-    if (!inWater && !crouching && jumpQueued &&
+    // Holding Space repeats the jump as soon as the player is grounded again.
+    if (!inWater && !crouching && (jumpQueued || keys.has('Space')) &&
         (grounded || (verticalVelocity <= 0 && !canOccupy(playerX, playerZ, feetY - 0.06)))) {
         verticalVelocity = JUMP_SPEED
         grounded = false
@@ -2644,33 +2643,35 @@ function updatePlayer(dt) {
         if (horizontalSpeed > 0.08) waterMotionSpeed = horizontalSpeed
         else waterMotionSpeed *= Math.exp(-2.0 * dt)
 
-        // Dive controls are explicit: crouching changes collision/eye height, but
-        // must not be the only source of downward swimming force.
+        // Ctrl/C actively drives the player downward; Space drives upward.
         const diveInput = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
-        if (diveInput) waterDiveTargetDepth = Math.min(28, waterDiveTargetDepth + 6.0 * dt)
-        else if (keys.has('Space')) waterDiveTargetDepth = Math.max(0, waterDiveTargetDepth - 8.0 * dt)
-        else waterDiveTargetDepth = Math.max(0, waterDiveTargetDepth - 0.45 * dt)
-
         const forwardInput = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)
         const lookVertical = -Math.sin(pitch)
         const swimVerticalInput = lookVertical * forwardInput +
             (keys.has('Space') ? 1.0 : 0) - (diveInput ? 1.0 : 0)
 
-        const velocityDiveDepth = Math.max(0, horizontalSpeed - WATER_DIVE_START_SPEED) * 0.35
-        // The spring's equilibrium holds the eyes just above the surface. Releasing
-        // dive input gradually returns the player to this buoyant resting height.
-        const floatFeet = waterSurface - EYE_HEIGHT + 0.18 +
-            WATER_GRAVITY / WATER_BUOYANCY - waterDiveTargetDepth - velocityDiveDepth
+        // Measure how deeply the body is immersed. A falling player keeps their
+        // existing impact velocity; the water damps it progressively as they sink.
+        const previousVerticalVelocity = verticalVelocity
+        const immersion = clamp((waterSurface - feetY) / currentPlayerHeight(), 0, 1)
+        const effectiveGravity = WATER_GRAVITY * Math.pow(1 - immersion, 2)
+        const buoyancyAcceleration = WATER_GRAVITY * 0.8 * immersion
 
-        verticalVelocity -= WATER_GRAVITY * dt
-        verticalVelocity += (floatFeet - feetY) * WATER_BUOYANCY * dt
+        verticalVelocity += (buoyancyAcceleration - effectiveGravity) * dt
         verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
-        if (diveInput) verticalVelocity -= SWIM_ACCELERATION * 1.15 * dt
-        verticalVelocity *= Math.exp(-WATER_DRAG * dt)
-        verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
+
+        // Shallow water has mild drag; drag increases continuously with depth.
+        // Crucially, there is no unconditional speed clamp on water entry.
+        const waterDragRate = 0.45 + 1.6 * immersion
+        verticalVelocity *= Math.exp(-waterDragRate * dt)
+
+        // Limit ordinary swimming speed only when the player was already moving
+        // at swim speeds. High-speed impacts are allowed to dissipate naturally.
+        if (Math.abs(previousVerticalVelocity) <= MAX_SWIM_SPEED) {
+            verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
+        }
         moveVertical(verticalVelocity * dt)
     } else {
-        waterDiveTargetDepth = 0
         waterMotionSpeed *= Math.exp(-5.0 * dt)
         verticalVelocity = Math.max(-MAX_FALL_SPEED, verticalVelocity - GRAVITY * dt)
         const wasFalling = verticalVelocity <= 0
@@ -2749,7 +2750,6 @@ function generate() {
     cameraEyeHeight = EYE_HEIGHT
     horizontalVelocityX = 0
     horizontalVelocityZ = 0
-    waterDiveTargetDepth = 0
     waterMotionSpeed = 0
     grounded = true
     jumpQueued = false
