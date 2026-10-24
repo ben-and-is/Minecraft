@@ -113,8 +113,6 @@ scene.fogMode = BABYLON.Scene.FOGMODE_EXP2
 scene.fogDensity = 0.012
 scene.fogColor = new BABYLON.Color3(.53, .81, .92)
 scene.collisionsEnabled = false
-
-// A 192 × 192 block map provides 12 × 12 chunks, enough room for a Minecraft-scale ocean.
 const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_WOOD = 8, PALM_LEAVES = 9, DARK_WOOD = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
@@ -151,8 +149,6 @@ const materials = colors.map((color, i) => {
     m.backFaceCulling = false
 
     if (i === WATER || i === FRESH_WATER) {
-        // Freshwater is a distinct light blue and transmits more light.
-        // Saltwater stays darker and more opaque to avoid an X-ray appearance.
         m.diffuseColor = i === FRESH_WATER
             ? new BABYLON.Color3(.34, .68, .94)
             : new BABYLON.Color3(.075, .24, .47)
@@ -160,7 +156,6 @@ const materials = colors.map((color, i) => {
         m.transparencyMode = BABYLON.Material.MATERIAL_ALPHABLEND
         m.needDepthPrePass = true
     } else if (i === LEAVES || i === PALM_LEAVES || i === DARK_LEAVES) {
-        // All foliage is opaque; only the original leaf type needs vertex tint.
         m.useVertexColors = i === LEAVES
         m.useVertexAlpha = false
         m.transparencyMode = BABYLON.Material.MATERIAL_OPAQUE
@@ -189,6 +184,9 @@ let meshes = []
 let chunkMeshes = new Map()
 let desiredChunkKeys = new Set()
 let pendingChunkQueue = []
+let flowingWater = new Map()
+let dirtyWaterChunks = new Set()
+let waterPhysicsAccumulator = 0
 let chunkLoadStatusActive = false
 let decorationBuffersByChunk = new Map()
 let lastChunkCenterX = -1
@@ -222,8 +220,7 @@ const SWIM_ACCELERATION = 24
 const MAX_SWIM_SPEED = 5.0
 const MAX_WATER_HORIZONTAL_SPEED = 7.2
 const WATER_MOVE_SPEED = 3.0
-const WATER_DIVE_START_SPEED = 2.0
-const WATER_HORIZONTAL_DRAG = 0.16
+
 const MAX_FALL_SPEED = 28
 const SUBSTEP = .12
 const EPS = .0001
@@ -233,7 +230,7 @@ let verticalVelocity = 0
 let cameraEyeHeight = EYE_HEIGHT
 let horizontalVelocityX = 0
 let horizontalVelocityZ = 0
-let waterMotionSpeed = 0
+
 let grounded = false
 let yaw = 0
 let pitch = 0
@@ -287,8 +284,6 @@ function isSolid(x, y, z) {
 }
 
 function rand(x, z) {
-    // Keep the seed contribution in a stable numeric range so integer world
-    // seeds produce distinct, repeatable noise rather than near-identical maps.
     const seedOffset = (seed % 1000003) * 0.0747
     const n = Math.sin(x * 127.1 + z * 311.7 + seedOffset) * 43758.5453
     return n - Math.floor(n)
@@ -305,9 +300,6 @@ function noise(x, z) {
 
 function createWorldFeatures() {
     oceans = [{ name: 'Ocean', level: 12 }]
-
-    // Every feature is derived from the current world's seed: coordinates,
-    // sizes, coastline warping, and local relief change between world generations.
     const vary = (key, base, amount) => base + (rand(key, key * 1.91 + 17) - 0.5) * amount
     const scale = (key, base, amount) => base * (1 + (rand(key + 23, key * 1.37 + 29) - 0.5) * amount)
 
@@ -349,8 +341,6 @@ function createWorldFeatures() {
             peak: scale(1259, 13, 0.30), warp: scale(1277, 6, 0.70), edgeScale: vary(1279, 0.75, 0.28)
         }
     ]
-
-    // Some seeds gain an additional smaller island, making the number of landmasses vary.
     if (rand(1283, 1289) > 0.48) {
         islands.push({
             name: 'Lost Isle',
@@ -399,8 +389,6 @@ function createWorldFeatures() {
             ]
         }
     ]
-
-    // Deserts are rare. When one appears it spans a large, mostly flat country.
     deserts = []
     const desertRoll = rand(1889, 1891)
     if (desertRoll > 0.64) {
@@ -419,9 +407,6 @@ function createWorldFeatures() {
             warp: scale(1973, 14, 0.45), edgeScale: vary(1979, 1.18, 0.24)
         })
     }
-
-    // Underwater rifts are cut into oceanic seabed, while surface fissures
-    // open into deeper, irregular underground chambers on some islands.
     oceanRifts = []
     const riftCount = 2 + Math.floor(rand(1987, 1993) * 3)
     for (let i = 0; i < riftCount; i++) {
@@ -463,9 +448,6 @@ function createWorldFeatures() {
         x: host.x + (rand(xKey, xKey + 7) - 0.5) * host.rx * fraction,
         z: host.z + (rand(zKey, zKey + 11) - 0.5) * host.rz * fraction
     })
-
-    // Mountains remain rare and now occupy only part of their host island.
-    // Footprints range from tall, small plateaus to larger broken escarpments.
     if (mountainRoll < 0.05) {
         const host = chooseHostIsland(1485)
         const center = placeNearIsland(host, 1493, 1499, 0.34)
@@ -529,9 +511,6 @@ function createWorldFeatures() {
         { x: N * vary(823, 0.60, 0.12), z: N * vary(827, 0.46, 0.12), rx: scale(829, 23, 0.35), rz: scale(839, 19, 0.35) },
         { x: N * vary(853, 0.35, 0.10), z: N * vary(857, 0.68, 0.10), rx: scale(859, 20, 0.35), rz: scale(863, 16, 0.35) }
     ]
-
-
-    // Add sheltered inland ponds at two different elevations.
     const lowPondHost = islands[Math.floor(rand(5261, 5273) * Math.min(2, islands.length))]
     ponds.push({
         name: 'Low Basin', kind: 'small',
@@ -552,9 +531,6 @@ function createWorldFeatures() {
             level: 13 + Math.floor(rand(5419, 5431) * 8)
         })
     }
-
-    // A seed now rearranges the islands themselves, including their dimensions,
-    // rather than merely repainting noise over nearly fixed coordinates.
     const layoutTargets = []
     const layoutAnchors = islands.map((island, i) => {
         const oldX = island.x, oldZ = island.z
@@ -565,8 +541,6 @@ function createWorldFeatures() {
         const minX = island.rx * 1.12 + 3, maxX = N - island.rx * 1.12 - 3
         const minZ = island.rz * 1.12 + 3, maxZ = N - island.rz * 1.12 - 3
         let best = null, bestSeparation = -Infinity
-        // Pick the candidate that best spreads islands apart. The candidates
-        // are seed-specific, so broad geography changes between world generations.
         for (let attempt = 0; attempt < 18; attempt++) {
             const candidateX = minX + rand(4177 + i * 47 + attempt * 13, 4181 + i * 53 + attempt * 17) * (maxX - minX)
             const candidateZ = minZ + rand(4201 + i * 59 + attempt * 19, 4211 + i * 61 + attempt * 23) * (maxZ - minZ)
@@ -603,8 +577,6 @@ function createWorldFeatures() {
         point.x = clamp(point.x + dx, 4, N - 5)
         point.z = clamp(point.z + dz, 4, N - 5)
     }
-
-    // Keep nearby lakes, deserts, hills, forest zones and fissures travelling with their host region.
     for (const group of [ponds, deserts, mountains, hillFeatures, plains, oceanRifts, surfaceFissures]) {
         for (const feature of group) {
             warpLayoutPoint(feature)
@@ -630,17 +602,10 @@ function plainsInfluence(x, z) {
 }
 
 function isDarkOakBiomeAt(x, z) {
-    // Larger, broader forest regions: lower spatial frequency expands patches;
-    // a slightly lower threshold lets their edges occupy more of the island.
     const biomeNoise = noise(x * 0.016 + seed * 0.011 + 73, z * 0.016 - seed * 0.017 + 29)
     return biomeNoise > 0.70 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
 }
-
-// Warp and perturb ellipse distance so shorelines and mountain footprints have
-// uneven coves, lobes, shoulders, and ridges instead of smooth oval outlines.
 function irregularDistance(x, z, feature) {
-    // Multi-scale warping makes silhouettes asymmetric and craggy without letting
-    // the largest islands spill off the edge of the map.
     const warp = feature.warp || 0
     const warpX =
         (noise(x * 0.026 + feature.x * 0.13, z * 0.026 + feature.z * 0.13) - 0.5) * warp +
@@ -686,13 +651,9 @@ function isBeachSandAt(x, z, h) {
 
     const currentMask = islandInfluenceAt(x, z)
     if (currentMask < 0.10) return false
-
-    // Do not turn inland lake and pond margins into ocean beaches.
     for (const pond of ponds) {
         if (irregularDistance(x, z, pond) < 1.62) return false
     }
-
-    // Sample a slightly wider band to give natural beaches more thickness.
     let outerOceanCoast = false
     for (let dx = -6; dx <= 6 && !outerOceanCoast; dx++) {
         for (let dz = -6; dz <= 6; dz++) {
@@ -710,8 +671,6 @@ function isBeachSandAt(x, z, h) {
         }
     }
     if (!outerOceanCoast) return false
-
-    // Keep broken beach stretches, not a full sand ring.
     const broadPatch = noise(x * 0.047 + seed * 0.013 + 211, z * 0.047 - seed * 0.017 + 83)
     const patchDetail = noise(x * 0.12 + seed * 0.021 + 17, z * 0.12 - seed * 0.019 + 59)
     return broadPatch > 0.38 && patchDetail > 0.40 && rand(x + 2003, z + 2011) > 0.14
@@ -824,7 +783,6 @@ function mountainRiseAt(x, z) {
 
 function terrainHeight(x, z) {
     const seaLevel = oceans.length ? oceans[0].level : 12
-    // The ocean floor is roughly twice as deep as before.
     const seabed = 1 + Math.floor(
         noise(x * 0.055 + seed * 0.01, z * 0.055 - seed * 0.01) * 2
     )
@@ -841,18 +799,12 @@ function terrainHeight(x, z) {
     }
 
     height += hillRiseAt(x, z)
-
-    // Broad low-frequency uplift gives some islands higher rolling country
-    // without adding steep mountain-like slopes.
     const uplandNoise = noise(x * 0.016 + seed * 0.014 + 43,
         z * 0.016 - seed * 0.012 + 71)
     const uplandAmount = Math.pow(clamp((uplandNoise - 0.47) * 1.9, 0, 1), 1.25)
     height += uplandAmount * 6.5 * islandMask * (1 - flatness * 0.55)
 
     height += mountainRiseAt(x, z)
-
-    // Blend desert land toward low-relief sandy plains while retaining a little
-    // noisy dune texture; steep hills and cliffs fade out through the biome edge.
     const desertMask = desertInfluenceAt(x, z)
     if (desertMask > 0) {
         const desertBase = seaLevel + 3.5 +
@@ -905,8 +857,6 @@ function createHeightMap() {
 }
 
 function createOceans() {
-    // Fill the water-level map globally. voxelize() only places water above the
-    // seabed and up to this fixed sea level, so it cannot render over land.
     waterLevels.fill(oceans[0].level)
 }
 
@@ -997,8 +947,6 @@ function createPonds() {
                     heights[col] = Math.min(originalHeight, Math.max(1, pond.level - depth))
                     waterLevels[col] = pond.level
                 } else if (originalHeight > seaLevel && originalHeight > pond.level) {
-                    // Maintain a dry raised rim even for low-level ponds, or global ocean
-                    // water would refill the basin to sea level.
                     const t = clamp((edge - 1) / 0.38, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const target = Math.round(pond.level + (originalHeight - pond.level) * smooth)
@@ -1091,8 +1039,6 @@ function isFreshWaterColumnAt(x, z) {
     }
 
     if (heights[ci(x, z)] > seaLevel) return false
-
-    // Shallow waters hugging large islands are fresh; the open ocean remains salt.
     for (let dx = -4; dx <= 4; dx++) {
         for (let dz = -4; dz <= 4; dz++) {
             if (dx * dx + dz * dz > 16) continue
@@ -1137,8 +1083,6 @@ function voxelize() {
             }
         }
     }
-
-    // Water surfaces share levels but use separate block types for fresh and salt water.
     for (let x = 0; x < N; x++) {
         for (let z = 0; z < N; z++) {
             const level = waterLevels[ci(x, z)]
@@ -1151,221 +1095,184 @@ function voxelize() {
     }
 }
 
+const WATER_STEP_INTERVAL = 0.08
+const WATER_CELLS_PER_STEP = 900
+const WATER_MAX_FLAT_SPREAD = 4
+
+function markWaterChunkDirty(x, z) {
+    const cx = Math.floor(x / CS)
+    const cz = Math.floor(z / CS)
+    const chunks = new Set([cx + ',' + cz])
+    if (x % CS === 0) chunks.add((cx - 1) + ',' + cz)
+    if (x % CS === CS - 1) chunks.add((cx + 1) + ',' + cz)
+    if (z % CS === 0) chunks.add(cx + ',' + (cz - 1))
+    if (z % CS === CS - 1) chunks.add(cx + ',' + (cz + 1))
+
+    for (const key of chunks) {
+        if (chunkMeshes.has(key) && desiredChunkKeys.has(key)) dirtyWaterChunks.add(key)
+    }
+}
+
+function addFlowWater(x, y, z, flatSteps = 0) {
+    if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
+    if (get(x, y, z) !== EMPTY) return false
+
+    set(x, y, z, FRESH_WATER)
+    flowingWater.set(idx(x, y, z), { flatSteps, spreadStarted: false })
+    markWaterChunkDirty(x, z)
+    return true
+}
+
 function flowWaterDownhill() {
-    const seaLevel = oceans[0].level
-    const flowPlaced = []
     const sources = ponds
         .filter(pond => !pond.disabled && (!pond.connected || pond.variableLevel) &&
             Number.isFinite(pond.level))
         .sort((a, b) => b.level - a.level)
 
-    const placeFlowBlock = (x, y, z) => {
-        if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 0 || y >= H) return false
-        const existing = get(x, y, z)
-        if (existing !== EMPTY) return isWaterBlock(existing)
-        set(x, y, z, FRESH_WATER)
-        flowPlaced.push(idx(x, y, z))
-        return true
-    }
+    for (const pond of sources) {
+        const sourceLevel = Math.round(pond.level)
+        const margin = (pond.warp || 0) + 3
+        const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.25 - margin))
+        const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.25 + margin))
+        const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.25 - margin))
+        const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.25 + margin))
+        let bestOutlet = null
 
-    for (const sourcePond of sources) {
-        const sourceLevel = Math.round(sourcePond.level)
-        const margin = (sourcePond.warp || 0) + 3
-        const x0 = Math.max(1, Math.floor(sourcePond.x - sourcePond.rx * 1.25 - margin))
-        const x1 = Math.min(N - 2, Math.ceil(sourcePond.x + sourcePond.rx * 1.25 + margin))
-        const z0 = Math.max(1, Math.floor(sourcePond.z - sourcePond.rz * 1.25 - margin))
-        const z1 = Math.min(N - 2, Math.ceil(sourcePond.z + sourcePond.rz * 1.25 + margin))
-        const outlets = []
-
-        // Only water at the actual edge of a generated body can become an outlet.
         for (let x = x0; x <= x1; x++) {
             for (let z = z0; z <= z1; z++) {
-                const edge = irregularDistance(x, z, sourcePond)
+                const edge = irregularDistance(x, z, pond)
                 if (edge < 0.70 || edge > 1.08) continue
                 if (!isWaterBlock(get(x, sourceLevel, z))) continue
 
                 for (let dz = -1; dz <= 1; dz++) {
                     for (let dx = -1; dx <= 1; dx++) {
                         if (dx === 0 && dz === 0) continue
-                        const nx = x + dx, nz = z + dz
+                        const nx = x + dx
+                        const nz = z + dz
                         if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                        if (irregularDistance(nx, nz, sourcePond) < 1.00) continue
+                        if (irregularDistance(nx, nz, pond) < 1.00) continue
+                        if (get(nx, sourceLevel, nz) !== EMPTY) continue
 
-                        const ground = heights[ci(nx, nz)]
-                        const drop = sourceLevel - (ground + 1)
+                        const drop = sourceLevel - (heights[ci(nx, nz)] + 1)
                         if (drop < 2) continue
-                        const distance = Math.hypot(dx, dz)
-                        const score = drop / distance +
-                            (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3.0 +
+                        const score = drop / Math.hypot(dx, dz) +
+                            (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3 +
                             rand(x + nx * 17 + 5603, z + nz * 19 + 5609) * 0.025
-                        outlets.push({ x: nx, z: nz, score })
+
+                        if (!bestOutlet || score > bestOutlet.score) {
+                            bestOutlet = { x: nx, z: nz, score }
+                        }
                     }
                 }
             }
         }
 
-        if (!outlets.length) continue
-        outlets.sort((a, b) => b.score - a.score)
-        const first = outlets[0]
-        let x = first.x, z = first.z
-        let flowTop = sourceLevel
-        let flatRun = 0
-        let madeFall = false
-        const visited = new Set()
-        const maxSteps = 128
+        if (bestOutlet) addFlowWater(bestOutlet.x, sourceLevel, bestOutlet.z)
+    }
+}
 
-        for (let step = 0; step < maxSteps; step++) {
-            if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1) break
-            const key = x + ',' + z
-            if (visited.has(key)) break
-            visited.add(key)
+function updateWaterPhysics(dt) {
+    if (!flowingWater.size) return
+    waterPhysicsAccumulator += Math.min(dt, 0.1)
+    if (waterPhysicsAccumulator < WATER_STEP_INTERVAL) return
+    waterPhysicsAccumulator %= WATER_STEP_INTERVAL
 
-            const ground = heights[ci(x, z)]
-            if (ground + 1 > flowTop) break
+    const batch = Array.from(flowingWater.keys()).slice(0, WATER_CELLS_PER_STEP)
+    for (const cell of batch) {
+        const state = flowingWater.get(cell)
+        if (!state) continue
 
-            const insideSource = irregularDistance(x, z, sourcePond) < 1.45
-            let waterContactTop = -1
-            if (!insideSource) {
-                for (let y = ground + 1; y <= flowTop; y++) {
-                    if (isWaterBlock(get(x, y, z))) waterContactTop = Math.max(waterContactTop, y)
-                }
-            }
-            if (waterContactTop >= 0) {
-                // Join the stream to an encountered lake/river instead of stopping
-                // above it. Fill only the clear gap between its surface and flowTop.
-                let canJoin = true
-                for (let y = waterContactTop + 1; y <= flowTop; y++) {
-                    if (isSolid(x, y, z)) { canJoin = false; break }
-                }
-                if (canJoin) {
-                    for (let y = waterContactTop + 1; y <= flowTop; y++) {
-                        if (get(x, y, z) === EMPTY) placeFlowBlock(x, y, z)
-                    }
-                }
+        const x = cell % N
+        const row = Math.floor(cell / N)
+        const z = row % N
+        const y = Math.floor(row / N)
+        if (!isWaterBlock(get(x, y, z))) {
+            flowingWater.delete(cell)
+            continue
+        }
+
+        const above = y + 1 < H && isWaterBlock(get(x, y + 1, z))
+        let sideFeed = false
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            if (isWaterBlock(get(x + dx, y, z))) {
+                sideFeed = true
                 break
             }
+        }
 
-            // Reject obstructed columns before placing any part of the fall.
-            let obstructed = false
-            for (let y = ground + 1; y <= flowTop; y++) {
-                if (isSolid(x, y, z)) { obstructed = true; break }
+        const below = y > 0 ? get(x, y - 1, z) : STONE
+        if (y > 0 && below === EMPTY) {
+            addFlowWater(x, y - 1, z, state.flatSteps)
+            if (!above && !sideFeed) {
+                set(x, y, z, EMPTY)
+                flowingWater.delete(cell)
+                markWaterChunkDirty(x, z)
+                continue
             }
-            if (obstructed) break
+        } else if (y > 0 && !isWaterBlock(below) && isSolid(x, y - 1, z) && !state.spreadStarted) {
+            const currentHeight = heights[ci(x, z)]
+            let next = null
+            let nextScore = -Infinity
 
-            if (flowTop - (ground + 1) >= 2) madeFall = true
-            for (let y = ground + 1; y <= flowTop; y++) {
-                if (get(x, y, z) === EMPTY) placeFlowBlock(x, y, z)
-            }
-
-            const nextFlowTop = Math.min(flowTop, ground + 1)
-            let steepest = null
-            let steepestScore = -Infinity
-            const flatOptions = []
             for (let dz = -1; dz <= 1; dz++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     if (dx === 0 && dz === 0) continue
-                    const nx = x + dx, nz = z + dz
+                    const nx = x + dx
+                    const nz = z + dz
                     if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                    if (visited.has(nx + ',' + nz)) continue
-                    const nh = heights[ci(nx, nz)]
-                    if (nh + 1 > nextFlowTop || nh > ground) continue
+                    if (get(nx, y, nz) !== EMPTY) continue
 
-                    if (nh < ground) {
-                        const score = (ground - nh) / Math.hypot(dx, dz) +
-                            rand(nx + step * 11 + 5611, nz - step * 13 + 5617) * 0.015
-                        if (score > steepestScore) {
-                            steepestScore = score
-                            steepest = { x: nx, z: nz, height: nh }
+                    const targetBelow = y > 0 ? get(nx, y - 1, nz) : STONE
+                    const targetSupported = isSolid(nx, y - 1, nz) || isWaterBlock(targetBelow)
+                    const targetHeight = heights[ci(nx, nz)]
+                    const downhill = targetHeight < currentHeight || !targetSupported
+                    const flat = targetHeight === currentHeight && targetSupported &&
+                        state.flatSteps < WATER_MAX_FLAT_SPREAD
+                    if (!downhill && !flat) continue
+                    if (targetSupported && targetHeight > currentHeight + 1) continue
+
+                    const score = (currentHeight - targetHeight) * 4 +
+                        (!targetSupported ? 2.5 : 0) +
+                        rand(nx + y * 13 + cell * 0.0001, nz - y * 17 + cell * 0.0002) * 0.2
+                    if (score > nextScore) {
+                        nextScore = score
+                        next = {
+                            x: nx,
+                            z: nz,
+                            flatSteps: targetHeight < currentHeight ? 0 : state.flatSteps + 1
                         }
-                    } else {
-                        flatOptions.push({
-                            x: nx, z: nz, height: nh,
-                            score: rand(nx + step * 17 + 5623, nz - step * 19 + 5629)
-                        })
                     }
                 }
             }
 
-            let next = steepest
             if (next) {
-                flatRun = 0
-            } else {
-                if (flatRun >= 4 || !flatOptions.length) break
-                flatOptions.sort((a, b) => b.score - a.score)
-                next = flatOptions[0]
-                flatRun++
+                addFlowWater(next.x, y, next.z, next.flatSteps)
+                state.spreadStarted = true
             }
-
-            flowTop = nextFlowTop
-            x = next.x
-            z = next.z
         }
 
-        // If the path never produced a visible vertical drop, don't leave a short
-        // horizontal ribbon detached from its source.
-        if (!madeFall) {
-            // Detached fragments are removed by the connectivity cleanup below.
+        if (flowingWater.has(cell)) {
+            flowingWater.delete(cell)
+            flowingWater.set(cell, state)
         }
     }
-
-    pruneDetachedFlowWater(flowPlaced)
 }
 
-function pruneDetachedFlowWater(flowPlaced) {
-    if (!flowPlaced.length) return
-    const candidates = new Set(flowPlaced)
-    const visited = new Set()
+function processDirtyWaterChunks() {
+    const batch = Array.from(dirtyWaterChunks).slice(0, 2)
+    for (const key of batch) {
+        dirtyWaterChunks.delete(key)
+        if (!desiredChunkKeys.has(key) || !chunkMeshes.has(key)) continue
 
-    const coordsFromIndex = value => {
-        const x = value % N
-        const row = Math.floor(value / N)
-        return { x, z: row % N, y: Math.floor(row / N) }
-    }
-    const isSourceWater = (x, y, z) => {
-        if (x < 0 || x >= N || z < 0 || z >= N || y < 0 || y >= H) return false
-        const col = ci(x, z)
-        const level = waterLevels[col]
-        return level !== EMPTY && y > heights[col] && y <= level && isWaterBlock(get(x, y, z))
-    }
+        const [cx, cz] = key.split(',').map(Number)
+        const previous = chunkMeshes.get(key)
+        const replacement = buildChunk(cx, cz)
+        chunkMeshes.set(key, replacement)
 
-    for (const start of candidates) {
-        if (visited.has(start)) continue
-        const stack = [start]
-        const component = []
-        let anchored = false
-        visited.add(start)
-
-        while (stack.length) {
-            const current = stack.pop()
-            component.push(current)
-            const { x, y, z } = coordsFromIndex(current)
-
-            // Terrain-following paths can step diagonally across the map.
-            for (let dy = -1; dy <= 1; dy++) {
-                for (let dz = -1; dz <= 1; dz++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                        if (dx === 0 && dy === 0 && dz === 0) continue
-                        const nx = x + dx, ny = y + dy, nz = z + dz
-                        if (nx < 0 || nx >= N || nz < 0 || nz >= N || ny < 0 || ny >= H) continue
-                        const neighbor = idx(nx, ny, nz)
-                        if (candidates.has(neighbor)) {
-                            if (!visited.has(neighbor)) {
-                                visited.add(neighbor)
-                                stack.push(neighbor)
-                            }
-                        } else if (isSourceWater(nx, ny, nz)) {
-                            anchored = true
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!anchored) {
-            for (const value of component) {
-                const { x, y, z } = coordsFromIndex(value)
-                if (isWaterBlock(get(x, y, z))) set(x, y, z, EMPTY)
-            }
+        for (const mesh of previous) {
+            mesh.dispose()
+            const index = meshes.indexOf(mesh)
+            if (index >= 0) meshes.splice(index, 1)
         }
     }
 }
@@ -1492,10 +1399,6 @@ function carveMountainCaves() {
                     }
                 }
             }
-
-            // Clear the first few tunnel blocks through the mountain face. Cutting
-            // the surface voxel itself removes the thin stone lip that can hang over
-            // the entrance, while the varying width gives each mouth a different shape.
             for (let x = minX; x <= maxX; x++) {
                 for (let z = minZ; z <= maxZ; z++) {
                     const dx = x + 0.5 - mouthX
@@ -1527,8 +1430,6 @@ function carveMountainCaves() {
                     }
                 }
             }
-
-            // Large lopsided cavern at the tunnel's end, plus an attached side pocket.
             const chamberAlong = depth * (0.62 + rand(caveKey + 1043, caveKey + 1051) * 0.20)
             const chamberSide = (rand(caveKey + 1061, caveKey + 1063) - 0.5) * sideBend
             const chamberX = mouthX + inwardX * chamberAlong + sideX * chamberSide
@@ -1571,8 +1472,6 @@ function carveMountainCaves() {
                     }
                 }
             }
-
-            // Some cave systems sprout a side chamber, making layouts differ markedly.
             if (rand(caveKey + 1117, caveKey + 1123) > 0.38) {
                 const branchAlong = depth * (0.34 + rand(caveKey + 1129, caveKey + 1151) * 0.28)
                 const branchSide = (rand(caveKey + 1153, caveKey + 1163) - 0.5) * (baseHalfWidth + 6)
@@ -1610,8 +1509,6 @@ function carveMountainCaves() {
 }
 
 function pruneFloatingArtifacts() {
-    // Tree crowns are allowed to hang above ground, but stray hard blocks (often
-    // remnants of terrain/waterfall carving) must connect to another voxel.
     for (let x = 1; x < N - 1; x++) {
         for (let z = 1; z < N - 1; z++) {
             const ground = heights[ci(x,z)]
@@ -1678,7 +1575,6 @@ function addTrees() {
                 set(ax, armY, az, CACTUS)
                 actualEnd = d
             }
-            // Only grow the upright arm from a horizontal segment that was placed.
             if (actualEnd === 0) continue
             const tipX = x + dx * actualEnd, tipZ = z + dz * actualEnd
             for (let y = armY + 1; y <= Math.min(H - 2, armY + armRise); y++) {
@@ -1714,8 +1610,6 @@ function addTrees() {
                 }
             }
         }
-
-        // A few brown coconut blocks tucked beneath the crown.
         const coconuts = 1 + Math.floor(rand(x + 3217, z + 3221) * 3)
         for (let c = 0; c < coconuts; c++) {
             const angle = rotation + c * Math.PI * 2 / coconuts
@@ -1776,8 +1670,6 @@ function addTrees() {
                 set(bx, branchY, bz, DARK_WOOD)
             }
         }
-
-        // Uneven rounded leaf layers make an oval crown rather than a boxy cube.
         const crownLayers = [
             { dy: -4, radius: 1.8 }, { dy: -3, radius: 2.7 },
             { dy: -2, radius: 3.5 }, { dy: -1, radius: 4.1 },
@@ -1799,8 +1691,6 @@ function addTrees() {
         setIfClear(x + 1, top + 2, z + 1, DARK_LEAVES)
         return true
     }
-
-    // Cacti are voxel-shaped saguaros, not single straight columns.
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
             const col = ci(x,z), h = heights[col]
@@ -1809,8 +1699,6 @@ function addTrees() {
             placeCactus(x,z,h)
         }
     }
-
-    // Broad forest-noise patches create quiet groves, sparse country and dense woods.
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
             const col=ci(x,z), h=heights[col]
@@ -2127,9 +2015,6 @@ function buildChunk(cx, cz) {
 
     const x0 = cx * CS, z0 = cz * CS
     const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
-
-    // Scan actual occupied voxels: tree canopies and carved cave roofs must not
-    // be clipped just because a surface height estimate is too low.
     let maxY = 0
     for (let y = H - 1; y >= 0; y--) {
         let foundOccupied = false
@@ -2156,10 +2041,6 @@ function buildChunk(cx, cz) {
                     const neighborX = x + face.d[0]
                     const neighborZ = z + face.d[2]
                     let neighbor = get(neighborX, y + face.d[1], neighborZ)
-
-                    // Water faces render only against air. This prevents water
-                    // from showing through terrain (X-ray effect). Solid faces
-                    // remain visible next to water so the riverbed is opaque.
                     if (isWaterBlock(type)) {
                         if (neighbor !== EMPTY) continue
                     } else if (neighbor !== EMPTY && !isWaterBlock(neighbor)) {
@@ -2196,6 +2077,7 @@ function buildChunk(cx, cz) {
 }
 
 function unloadChunk(key) {
+    dirtyWaterChunks.delete(key)
     const chunkList = chunkMeshes.get(key)
     if (!chunkList) return
     for (const mesh of chunkList) {
@@ -2228,9 +2110,6 @@ function updateChunkLoading(force = false) {
     for (const key of Array.from(chunkMeshes.keys())) {
         if (!wantedKeys.has(key)) unloadChunk(key)
     }
-
-    // Queue missing chunks center-outward. A few chunks mesh each frame so world
-    // changes never freeze for one giant synchronous build.
     pendingChunkQueue = limited.filter(chunk => !chunkMeshes.has(chunk.key))
     lastChunkCenterX = centerX
     lastChunkCenterZ = centerZ
@@ -2340,9 +2219,6 @@ function tryAutoStepInDirection(dx, dz) {
 
     const dirX = dx / length
     const dirZ = dz / length
-
-    // Try progressively farther landing points. The nearest one can still
-    // overlap the block on diagonal approaches or near voxel corners.
     for (const distance of [0.65, 0.8, 0.95, 1.1, 1.25]) {
         const targetX = playerX + dirX * distance
         const targetZ = playerZ + dirZ * distance
@@ -2452,7 +2328,6 @@ function getWaterSurface() {
         [0, -PLAYER_RADIUS * 0.65]
     ]
     let surface = null
-    // A small margin avoids losing swim state on voxel-edge crossings while diving.
     const bodyBottom = feetY - 0.10
     const bodyTop = feetY + currentPlayerHeight() + 0.10
 
@@ -2489,9 +2364,6 @@ function updateUnderwaterAtmosphere(dt = 1 / 60) {
     if (waterSurface !== null) {
         submersion = clamp((waterSurface - feetY) / PLAYER_HEIGHT, 0, 1)
         depth = Math.max(0, waterSurface - eyeY)
-
-        // Sample the surface water nearest the player, even if their eyes are still
-        // above the surface. This begins dimming as the body enters the water.
         const offsets = [
             [0, 0],
             [PLAYER_RADIUS * 0.65, 0],
@@ -2538,9 +2410,6 @@ function updateUnderwaterAtmosphere(dt = 1 / 60) {
             )
         }
     }
-
-    // Blend both color and fog strength by body submersion, then ease toward the
-    // target, so there is no instantaneous brightness jump at the water boundary.
     const targetColor = new BABYLON.Color3(
         skyFog.r + (underwaterColor.r - skyFog.r) * submersion,
         skyFog.g + (underwaterColor.g - skyFog.g) * submersion,
@@ -2610,9 +2479,6 @@ function updatePlayer(dt) {
         : 0
     const desiredVX = len > 0 ? mx / len * desiredSpeed : 0
     const desiredVZ = len > 0 ? mz / len * desiredSpeed : 0
-
-    // Movement velocity eases toward the requested speed; entering water/crouching
-    // slows the player by deceleration rather than a one-frame speed snap.
     const responseRate = waterBeforeMove ? (len > 0 ? 3.5 : 2.2) : (len > 0 ? 11.0 : 13.0)
     const velocityBlend = 1 - Math.exp(-responseRate * dt)
     horizontalVelocityX += (desiredVX - horizontalVelocityX) * velocityBlend
@@ -2630,8 +2496,6 @@ function updatePlayer(dt) {
 
     const waterSurface = getWaterSurface()
     const inWater = waterSurface !== null
-
-    // Holding Space repeats the jump as soon as the player is grounded again.
     if (!inWater && !crouching && (jumpQueued || keys.has('Space')) &&
         (grounded || (verticalVelocity <= 0 && !canOccupy(playerX, playerZ, feetY - 0.06)))) {
         verticalVelocity = JUMP_SPEED
@@ -2640,18 +2504,11 @@ function updatePlayer(dt) {
     jumpQueued = false
 
     if (inWater) {
-        if (horizontalSpeed > 0.08) waterMotionSpeed = horizontalSpeed
-        else waterMotionSpeed *= Math.exp(-2.0 * dt)
-
-        // Ctrl/C actively drives the player downward; Space drives upward.
         const diveInput = keys.has('ControlLeft') || keys.has('ControlRight') || keys.has('KeyC')
         const forwardInput = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0)
         const lookVertical = -Math.sin(pitch)
         const swimVerticalInput = lookVertical * forwardInput +
             (keys.has('Space') ? 1.0 : 0) - (diveInput ? 1.0 : 0)
-
-        // Measure how deeply the body is immersed. A falling player keeps their
-        // existing impact velocity; the water damps it progressively as they sink.
         const previousVerticalVelocity = verticalVelocity
         const immersion = clamp((waterSurface - feetY) / currentPlayerHeight(), 0, 1)
         const effectiveGravity = WATER_GRAVITY * Math.pow(1 - immersion, 2)
@@ -2659,20 +2516,14 @@ function updatePlayer(dt) {
 
         verticalVelocity += (buoyancyAcceleration - effectiveGravity) * dt
         verticalVelocity += swimVerticalInput * SWIM_ACCELERATION * dt
-
-        // Shallow water has mild drag; drag increases continuously with depth.
-        // Crucially, there is no unconditional speed clamp on water entry.
         const waterDragRate = 0.45 + 1.6 * immersion
         verticalVelocity *= Math.exp(-waterDragRate * dt)
-
-        // Limit ordinary swimming speed only when the player was already moving
-        // at swim speeds. High-speed impacts are allowed to dissipate naturally.
         if (Math.abs(previousVerticalVelocity) <= MAX_SWIM_SPEED) {
             verticalVelocity = clamp(verticalVelocity, -MAX_SWIM_SPEED, MAX_SWIM_SPEED)
         }
         moveVertical(verticalVelocity * dt)
     } else {
-        waterMotionSpeed *= Math.exp(-5.0 * dt)
+
         verticalVelocity = Math.max(-MAX_FALL_SPEED, verticalVelocity - GRAVITY * dt)
         const wasFalling = verticalVelocity <= 0
         moveVertical(verticalVelocity * dt)
@@ -2691,6 +2542,9 @@ function generate() {
     chunkMeshes.clear()
     desiredChunkKeys = new Set()
     pendingChunkQueue = []
+    flowingWater.clear()
+    dirtyWaterChunks.clear()
+    waterPhysicsAccumulator = 0
     chunkLoadStatusActive = true
     decorationBuffersByChunk = new Map()
     lastChunkCenterX = -1
@@ -2723,8 +2577,6 @@ function generate() {
             x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
             for (let z = Math.max(2, Math.floor(N / 2 - radius));
                 z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
-
-                // Start on dry land, never on the submerged seabed or waterline.
                 if (heights[ci(x, z)] <= oceans[0].level) continue
                 const floor = findGround(x + .5, z + .5)
                 if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
@@ -2750,7 +2602,7 @@ function generate() {
     cameraEyeHeight = EYE_HEIGHT
     horizontalVelocityX = 0
     horizontalVelocityZ = 0
-    waterMotionSpeed = 0
+
     grounded = true
     jumpQueued = false
     creativeFlying = false
@@ -2832,8 +2684,10 @@ engine.runRenderLoop(() => {
     previousTime = now
 
     updatePlayer(dt)
+    updateWaterPhysics(dt)
     updateChunkLoading()
     processChunkBuildQueue()
+    processDirtyWaterChunks()
     updateUnderwaterAtmosphere(dt)
     scene.render()
 })
