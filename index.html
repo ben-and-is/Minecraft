@@ -1134,7 +1134,7 @@ function flowWaterDownhill() {
         const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.25 + margin))
         const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.25 - margin))
         const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.25 + margin))
-        let bestOutlet = null
+        const outlets = []
 
         for (let x = x0; x <= x1; x++) {
             for (let z = z0; z <= z1; z++) {
@@ -1157,15 +1157,25 @@ function flowWaterDownhill() {
                             (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3 +
                             rand(x + nx * 17 + 5603, z + nz * 19 + 5609) * 0.025
 
-                        if (!bestOutlet || score > bestOutlet.score) {
-                            bestOutlet = { x: nx, z: nz, score }
-                        }
+                        outlets.push({ x: nx, z: nz, score, sourceX: x, sourceZ: z })
                     }
                 }
             }
         }
 
-        if (bestOutlet) addFlowWater(bestOutlet.x, sourceLevel, bestOutlet.z)
+        outlets.sort((a, b) => b.score - a.score)
+        const selected = []
+        const maxOutlets = clamp(Math.ceil((pond.rx + pond.rz) / 9), 1, 5)
+
+        for (const outlet of outlets) {
+            if (selected.length >= maxOutlets) break
+            if (get(outlet.sourceX, sourceLevel, outlet.sourceZ) === EMPTY) continue
+            if (!isWaterBlock(get(outlet.sourceX, sourceLevel, outlet.sourceZ))) continue
+            if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) continue
+            if (Math.abs(outlet.x - outlet.sourceX) + Math.abs(outlet.z - outlet.sourceZ) !== 1) continue
+            if (selected.some(other => Math.hypot(other.x - outlet.x, other.z - outlet.z) < 3.2)) continue
+            if (addFlowWater(outlet.x, sourceLevel, outlet.z)) selected.push(outlet)
+        }
     }
 }
 
@@ -1189,7 +1199,6 @@ function updateWaterPhysics(dt) {
             continue
         }
 
-        const above = y + 1 < H && isWaterBlock(get(x, y + 1, z))
         let sideFeed = false
         for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
             if (isWaterBlock(get(x + dx, y, z + dz))) {
@@ -1200,8 +1209,7 @@ function updateWaterPhysics(dt) {
 
         const below = y > 0 ? get(x, y - 1, z) : STONE
         if (y > 0 && below === EMPTY) {
-            addFlowWater(x, y - 1, z, state.flatSteps)
-            if (!above && !sideFeed) {
+            if (addFlowWater(x, y - 1, z, state.flatSteps) && !sideFeed) {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             }
@@ -1210,6 +1218,10 @@ function updateWaterPhysics(dt) {
         }
 
         if (y > 0 && isWaterBlock(below)) {
+            if (!sideFeed) {
+                set(x, y, z, EMPTY)
+                markWaterChunkDirty(x, z)
+            }
             flowingWater.delete(cell)
             continue
         }
