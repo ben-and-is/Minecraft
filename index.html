@@ -1118,7 +1118,7 @@ function addFlowWater(x, y, z, flatSteps = 0) {
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { flatSteps, spreadStarted: false })
+    flowingWater.set(idx(x, y, z), { flatSteps })
     markWaterChunkDirty(x, z)
     return true
 }
@@ -1205,11 +1205,18 @@ function updateWaterPhysics(dt) {
             addFlowWater(x, y - 1, z, state.flatSteps)
             if (!above && !sideFeed) {
                 set(x, y, z, EMPTY)
-                flowingWater.delete(cell)
                 markWaterChunkDirty(x, z)
-                continue
             }
-        } else if (y > 0 && !isWaterBlock(below) && isSolid(x, y - 1, z) && !state.spreadStarted) {
+            flowingWater.delete(cell)
+            continue
+        }
+
+        if (y > 0 && isWaterBlock(below)) {
+            flowingWater.delete(cell)
+            continue
+        }
+
+        if (y > 0 && isSolid(x, y - 1, z)) {
             const currentHeight = heights[ci(x, z)]
             let next = null
             let nextScore = -Infinity
@@ -1245,16 +1252,10 @@ function updateWaterPhysics(dt) {
                 }
             }
 
-            if (next) {
-                addFlowWater(next.x, y, next.z, next.flatSteps)
-                state.spreadStarted = true
-            }
+            if (next) addFlowWater(next.x, y, next.z, next.flatSteps)
         }
 
-        if (flowingWater.has(cell)) {
-            flowingWater.delete(cell)
-            flowingWater.set(cell, state)
-        }
+        flowingWater.delete(cell)
     }
 }
 
