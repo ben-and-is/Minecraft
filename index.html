@@ -1111,12 +1111,12 @@ function markWaterChunkDirty(x, z) {
     }
 }
 
-function addFlowWater(x, y, z, flatSteps = 0) {
+function addFlowWater(x, y, z, flatSteps = 0, sourceOutlet = false) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { flatSteps })
+    flowingWater.set(idx(x, y, z), { flatSteps, sourceOutlet })
     markWaterChunkDirty(x, z)
     return true
 }
@@ -1174,7 +1174,7 @@ function flowWaterDownhill() {
             if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) continue
             if (Math.abs(outlet.x - outlet.sourceX) + Math.abs(outlet.z - outlet.sourceZ) !== 1) continue
             if (selected.some(other => Math.hypot(other.x - outlet.x, other.z - outlet.z) < 3.2)) continue
-            if (addFlowWater(outlet.x, sourceLevel, outlet.z)) selected.push(outlet)
+            if (addFlowWater(outlet.x, sourceLevel, outlet.z, 0, true)) selected.push(outlet)
         }
     }
 }
@@ -1199,17 +1199,9 @@ function updateWaterPhysics(dt) {
             continue
         }
 
-        let sideFeed = false
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            if (isWaterBlock(get(x + dx, y, z + dz))) {
-                sideFeed = true
-                break
-            }
-        }
-
         const below = y > 0 ? get(x, y - 1, z) : STONE
         if (y > 0 && below === EMPTY) {
-            if (addFlowWater(x, y - 1, z, state.flatSteps) && !sideFeed) {
+            if (addFlowWater(x, y - 1, z, state.flatSteps) && !state.sourceOutlet) {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             }
@@ -1218,7 +1210,7 @@ function updateWaterPhysics(dt) {
         }
 
         if (y > 0 && isWaterBlock(below)) {
-            if (!sideFeed) {
+            if (!state.sourceOutlet) {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             }
