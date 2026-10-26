@@ -114,7 +114,7 @@ scene.fogDensity = 0.012
 scene.fogColor = new BABYLON.Color3(.53, .81, .92)
 scene.collisionsEnabled = false
 const N = 256, H = 96, CS = 16, YOFF = -5
-const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, WOOD = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_WOOD = 8, PALM_LEAVES = 9, DARK_WOOD = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
+const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_LOG = 8, PALM_LEAVES = 9, PINE_LOG = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
 const MAX_CHUNK_BUILDS_PER_FRAME = 3
 const MAX_LOADED_CHUNKS = 400
@@ -599,7 +599,7 @@ function plainsInfluence(x, z) {
     return influence
 }
 
-function isDarkOakBiomeAt(x, z) {
+function isPineForestAt(x, z) {
     const biomeNoise = noise(x * 0.016 + seed * 0.011 + 73, z * 0.016 - seed * 0.017 + 29)
     return biomeNoise > 0.70 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
 }
@@ -1067,7 +1067,7 @@ function voxelize() {
             for (let y = 0; y <= h; y++) {
                 let type
                 if (y === h) {
-                    type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : (isDarkOakBiomeAt(x, z) ? DARK_GRASS : GRASS)))
+                    type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : (isPineForestAt(x, z) ? DARK_GRASS : GRASS)))
                 } else if (desert && y >= h - 4) {
                     type = SAND
                 } else if (beach && y >= h - 3) {
@@ -1585,45 +1585,66 @@ function addTrees() {
     }
 
     function placePalm(x, z, h) {
-        return placeNormalTree(x, z, h)
+        // Palm tree: 3–4 palm logs, with the supplied sparse frond ring and layered crown.
+        const logLength = 3 + Math.floor(rand(x + 3137, z + 3163) * 2)
+        if (h + 1 + logLength >= H) return false
+        for (let y = h + 1; y <= h + logLength; y++) {
+            if (get(x, y, z) !== EMPTY) return false
+        }
+        for (let y = h + 1; y <= h + logLength; y++) set(x, y, z, PALM_LOG)
+
+        const frondBaseY = h + logLength - 1
+        const frondTips = [
+            [0,-3],[-2,-2],[2,-2],[-3,0],[3,0],[-2,2],[2,2],[0,3]
+        ]
+        for (const [dx,dz] of frondTips) {
+            setIfClear(x + dx, frondBaseY, z + dz, PALM_LEAVES)
+        }
+
+        // Broad 5x5 layer with its corners omitted; the trunk continues through the center.
+        const broadY = h + logLength
+        for (let dx = -2; dx <= 2; dx++) {
+            for (let dz = -2; dz <= 2; dz++) {
+                if (Math.abs(dx) === 2 && Math.abs(dz) === 2) continue
+                if (dx === 0 && dz === 0) continue
+                setIfClear(x + dx, broadY, z + dz, PALM_LEAVES)
+            }
+        }
+
+        // Four raised fronds at the very top, matching the provided palm template.
+        const topY = h + 1 + logLength
+        for (const [dx,dz] of [[0,-1],[-1,0],[1,0],[0,1]]) {
+            setIfClear(x + dx, topY, z + dz, PALM_LEAVES)
+        }
+        return true
     }
 
     function placeNormalTree(x, z, h) {
-        // Tree structure follows the supplied 5x5 template, with total height randomized to 4–6 blocks.
-        const treeHeight = 4 + Math.floor(rand(x + 47, z + 31) * 3)
-        if (h + treeHeight >= H) return false
+        // Plain oak: use the supplied 5x6x5 canopy; randomize only the vertical log length.
+        const logLength = 4 + Math.floor(rand(x + 47, z + 31) * 3)
+        if (h + logLength + 2 >= H) return false
 
         const cells = []
         const addCell = (dx, dy, dz, type) => cells.push({ x: x + dx, y: h + 1 + dy, z: z + dz, type })
+        for (let dy = 0; dy < logLength; dy++) addCell(0, dy, 0, LOG)
+
         const addBroadCanopyLayer = dy => {
             for (let dx = -2; dx <= 2; dx++) {
                 for (let dz = -2; dz <= 2; dz++) {
                     if (Math.abs(dx) === 2 && Math.abs(dz) === 2) continue
-                    addCell(dx, dy, dz, dx === 0 && dz === 0 ? WOOD : LEAVES)
+                    if (dx === 0 && dz === 0) continue
+                    addCell(dx, dy, dz, LEAVES)
                 }
             }
         }
-        const addUpperCanopyLayer = dy => {
-            for (let dx = -1; dx <= 1; dx++) {
-                for (let dz = -1; dz <= 1; dz++) addCell(dx, dy, dz, LEAVES)
-            }
+        addBroadCanopyLayer(logLength - 2)
+        addBroadCanopyLayer(logLength - 1)
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dz = -1; dz <= 1; dz++) addCell(dx, logLength, dz, LEAVES)
         }
+        addCell(0, logLength + 1, 0, LEAVES)
 
-        addCell(0, 0, 0, WOOD)
-        addCell(0, 1, 0, WOOD)
-        addBroadCanopyLayer(2)
-
-        if (treeHeight === 6) {
-            // Exact supplied template: two broad canopy layers, a 3x3 upper layer, and a top leaf.
-            addBroadCanopyLayer(3)
-            addUpperCanopyLayer(4)
-            addCell(0, 5, 0, LEAVES)
-        } else {
-            addUpperCanopyLayer(3)
-            if (treeHeight === 5) addCell(0, 4, 0, LEAVES)
-        }
-
-        // Only place the tree if every template cell is clear, avoiding partial canopies or overwriting terrain.
+        // Skip a tree if its trunk or canopy would occupy existing terrain or another tree.
         for (const cell of cells) {
             if (cell.x < 0 || cell.x >= N || cell.z < 0 || cell.z >= N ||
                 cell.y < 0 || cell.y >= H || get(cell.x, cell.y, cell.z) !== EMPTY) {
@@ -1634,8 +1655,32 @@ function addTrees() {
         return true
     }
 
-    function placeDarkOak(x, z, h) {
-        return placeNormalTree(x, z, h)
+    function placePineTree(x, z, h) {
+        // Pine tree: 7–8 dark logs, with the supplied tapered, layered pine-leaf crown.
+        const logLength = 7 + Math.floor(rand(x + 3251, z + 3257) * 2)
+        if (h + 1 + logLength >= H) return false
+        for (let y = h + 1; y <= h + logLength; y++) {
+            if (get(x, y, z) !== EMPTY) return false
+        }
+        for (let y = h + 1; y <= h + logLength; y++) set(x, y, z, PINE_LOG)
+
+        const canopyLayer = (dy, radius) => {
+            const layerY = h + 1 + dy
+            for (let dx = -radius; dx <= radius; dx++) {
+                for (let dz = -radius; dz <= radius; dz++) {
+                    if (Math.abs(dx) + Math.abs(dz) > radius) continue
+                    if (dx === 0 && dz === 0) continue
+                    setIfClear(x + dx, layerY, z + dz, DARK_LEAVES)
+                }
+            }
+        }
+        canopyLayer(logLength - 5, 3)
+        canopyLayer(logLength - 3, 2)
+        for (const [dx,dz] of [[0,-1],[-1,0],[1,0],[0,1]]) {
+            setIfClear(x + dx, h + logLength, z + dz, DARK_LEAVES)
+        }
+        setIfClear(x, h + 1 + logLength, z, DARK_LEAVES)
+        return true
     }
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
@@ -1653,7 +1698,7 @@ function addTrees() {
             if (desert > 0.32) continue
 
             const plains = plainsInfluence(x,z)
-            const inDarkOakBiome = isDarkOakBiomeAt(x, z)
+            const inPineForest = isPineForestAt(x, z)
             const forestRegion = noise(x * 0.018 + seed * 0.009, z * 0.018 - seed * 0.007)
             const baseTreeChance = plains > 0.28
                 ? 0.0025 + forestRegion * 0.010
@@ -1661,7 +1706,7 @@ function addTrees() {
                 : forestRegion > 0.54 ? 0.021
                 : forestRegion > 0.38 ? 0.007
                 : 0.0014
-            const treeChance = inDarkOakBiome ? 0.050 + forestRegion * 0.010 : baseTreeChance * 0.90
+            const treeChance = inPineForest ? 0.050 + forestRegion * 0.010 : baseTreeChance * 0.90
             if (rand(x + 3313,z + 3323) > treeChance) continue
 
             const warmLowland = z / N > 0.48 && z / N < 0.94 && h <= seaLevel + 10
@@ -1670,11 +1715,11 @@ function addTrees() {
 
             if (tropicalCoast) {
                 placePalm(x,z,h)
-            } else if (inDarkOakBiome && rand(x + 3337,z + 3343) < 0.72) {
-                if (!placeDarkOak(x,z,h)) placeNormalTree(x,z,h)
+            } else if (inPineForest && rand(x + 3337,z + 3343) < 0.72) {
+                if (!placePineTree(x,z,h)) placeNormalTree(x,z,h)
             } else if (forestRegion > 0.74 && plains < 0.22 && !coastal &&
                        rand(x + 3347,z + 3359) < 0.20) {
-                if (!placeDarkOak(x,z,h)) placeNormalTree(x,z,h)
+                if (!placePineTree(x,z,h)) placeNormalTree(x,z,h)
             } else {
                 placeNormalTree(x,z,h)
             }
@@ -1895,7 +1940,7 @@ function addGroundDecorations() {
             const flatness = plainsInfluence(x, z)
             const vegetationSignal = noise(x * 0.028 + seed * 0.007 + 17, z * 0.028 - seed * 0.009 - 29)
             let richness = clamp((vegetationSignal - 0.44) * 2.0, 0, 1)
-            if (isDarkOakBiomeAt(x, z)) richness = Math.max(richness, 0.88)
+            if (isPineForestAt(x, z)) richness = Math.max(richness, 0.88)
             richness *= 1 - flatness * 0.58
             const grassLimit = 0.035 + richness * 0.105
             const flowerLimit = grassLimit + 0.003 + richness * 0.012
