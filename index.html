@@ -1130,12 +1130,12 @@ function pruneFloatingWater() {
     return removed
 }
 
-function addFlowWater(x, y, z, horizontalSteps = 0, falling = false) {
+function addFlowWater(x, y, z, horizontalSteps = 0) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { horizontalSteps, falling })
+    flowingWater.set(idx(x, y, z), { horizontalSteps })
     markWaterChunkDirty(x, z)
     return true
 }
@@ -1195,7 +1195,7 @@ function flowWaterDownhill() {
             if (selected.some(other => Math.hypot(other.sourceX - outlet.sourceX, other.sourceZ - outlet.sourceZ) < minSpacing)) return false
 
             // Transfer, rather than duplicate, this surface-water block into a finite flow.
-            if (!addFlowWater(outlet.x, sourceLevel, outlet.z, 0, false)) return false
+            if (!addFlowWater(outlet.x, sourceLevel, outlet.z, 0)) return false
             set(outlet.sourceX, sourceLevel, outlet.sourceZ, EMPTY)
             markWaterChunkDirty(outlet.sourceX, outlet.sourceZ)
             selectedSources.add(sourceKey)
@@ -1243,7 +1243,7 @@ function updateWaterPhysics(dt) {
         // Water falls by moving its single voxel downward. The old cell is always
         // consumed, so waterfalls cannot act as an infinite source.
         if (y > 1 && below === EMPTY) {
-            if (addFlowWater(x, y - 1, z, state.horizontalSteps, true)) {
+            if (addFlowWater(x, y - 1, z, state.horizontalSteps)) {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             } else {
@@ -1272,13 +1272,12 @@ function updateWaterPhysics(dt) {
                 continue
             }
 
-            let spread = 0
             for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
                 const nx = x + dx, nz = z + dz
                 if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
                 if (get(nx, y, nz) !== EMPTY) continue
 
-                if (addFlowWater(nx, y, nz, state.horizontalSteps + 1, false)) spread++
+                addFlowWater(nx, y, nz, state.horizontalSteps + 1)
             }
 
             // The parent is spent when its outgoing flow is created. If no path
