@@ -87,6 +87,98 @@
         transform: translate(-50%, -50%);
         pointer-events: none;
     }
+
+    .ui .secondary {
+        margin-left: 8px;
+        background: #34475d;
+    }
+
+    .menu-screen {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        color: white;
+        background: radial-gradient(ellipse at top, #284c50ee 0%, #0a1322f5 58%, #070c15fa 100%);
+        backdrop-filter: blur(10px);
+    }
+
+    .menu-card {
+        width: min(100%, 560px);
+        padding: clamp(24px, 5vw, 44px);
+        border: 1px solid #ffffff2b;
+        border-radius: 20px;
+        background: #101b2be8;
+        box-shadow: 0 24px 80px #0008;
+    }
+
+    .menu-kicker {
+        color: #9bd8c0;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: .18em;
+        text-transform: uppercase;
+    }
+
+    .menu-card h1 {
+        margin: 10px 0;
+        font-size: clamp(36px, 8vw, 54px);
+        line-height: 1.04;
+    }
+
+    .menu-card p {
+        color: #c7d3e1;
+        line-height: 1.65;
+    }
+
+    .menu-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 24px;
+    }
+
+    .menu-actions button {
+        flex: 1 1 180px;
+        min-height: 46px;
+    }
+
+    .menu-actions .secondary {
+        margin-left: 0;
+        background: #34475d;
+    }
+
+    .menu-controls {
+        margin-top: 22px;
+        padding-top: 16px;
+        border-top: 1px solid #ffffff20;
+        color: #aebcd0;
+        font-size: 12px;
+        line-height: 1.8;
+    }
+
+    #regionTransition {
+        position: fixed;
+        inset: 0;
+        z-index: 900;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: #07111b;
+        color: white;
+        font: 700 16px/1.5 system-ui, sans-serif;
+        letter-spacing: .04em;
+        opacity: 1;
+        transition: opacity .35s ease;
+        pointer-events: all;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        #regionTransition { transition: none; }
+    }
 </style>
 </head>
 <body>
@@ -94,10 +186,23 @@
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
         <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, wide waterfalls, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk view radius, 400-chunk cap.</p>
-        <button id="g" type="button">Generate World</button>
+        <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
     <div id="crosshair"></div>
+    <div id="mainMenu" class="menu-screen" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
+        <div class="menu-card">
+            <div class="menu-kicker">Procedural voxel exploration</div>
+            <h1 id="menuTitle">Voxel World</h1>
+            <p>Explore a living archipelago with rivers, waterfalls, forests, and new procedurally generated regions as you travel beyond the horizon.</p>
+            <div class="menu-actions">
+                <button id="playBtn" type="button">Continue Exploring</button>
+                <button id="newWorldBtn" class="secondary" type="button">New World</button>
+            </div>
+            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Water moves every 400 ms and drains finite pond water into bounded flows.</div>
+        </div>
+    </div>
+    <div id="regionTransition" role="status" aria-live="polite">Entering a new region…</div>
 
 <script>
 (() => {
@@ -192,6 +297,13 @@ let decorationBuffersByChunk = new Map()
 let lastChunkCenterX = -1
 let lastChunkCenterZ = -1
 let seed = 1
+let worldSeedBase = null
+let requestedRegionSeed = null
+let worldRegionX = 0
+let worldRegionZ = 0
+let pendingRegionSpawn = null
+let worldTransitioning = false
+let mainMenuOpen = true
 let ponds = []
 let oceans = []
 let mountains = []
@@ -601,7 +713,7 @@ function plainsInfluence(x, z) {
 
 function isPineForestAt(x, z) {
     const biomeNoise = noise(x * 0.016 + seed * 0.011 + 73, z * 0.016 - seed * 0.017 + 29)
-    return biomeNoise > 0.84 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
+    return biomeNoise > 0.78 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
 }
 function irregularDistance(x, z, feature) {
     const warp = feature.warp || 0
@@ -1093,8 +1205,8 @@ function voxelize() {
     }
 }
 
-const WATER_STEP_INTERVAL = 0.08
-const WATER_CELLS_PER_STEP = 900
+const WATER_STEP_INTERVAL = 0.4
+const WATER_CELLS_PER_STEP = 4096
 const WATER_MAX_HORIZONTAL_STEPS = 3
 
 function markWaterChunkDirty(x, z) {
@@ -1130,12 +1242,12 @@ function pruneFloatingWater() {
     return removed
 }
 
-function addFlowWater(x, y, z, horizontalSteps = 0) {
+function addFlowWater(x, y, z, horizontalSteps = 0, source = null) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { horizontalSteps })
+    flowingWater.set(idx(x, y, z), { horizontalSteps, source })
     markWaterChunkDirty(x, z)
     return true
 }
@@ -1165,6 +1277,9 @@ function flowWaterDownhill() {
                     const nx = x + dx, nz = z + dz
                     if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
                     if (get(nx, sourceLevel, nz) !== EMPTY) continue
+                    // Only start a waterfall where there is a real drop below the lip.
+                    // This avoids creating a suspended outlet one block above the pond bed.
+                    if (get(nx, sourceLevel - 1, nz) !== EMPTY) continue
 
                     const drop = sourceLevel - (heights[ci(nx, nz)] + 1)
                     if (drop < 2) continue
@@ -1192,18 +1307,19 @@ function flowWaterDownhill() {
             if (selectedSources.has(sourceKey)) return false
             if (!isWaterBlock(get(outlet.sourceX, sourceLevel, outlet.sourceZ))) return false
             if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) return false
+            if (get(outlet.x, sourceLevel - 1, outlet.z) !== EMPTY) return false
             if (selected.some(other => Math.hypot(other.sourceX - outlet.sourceX, other.sourceZ - outlet.sourceZ) < minSpacing)) return false
 
-            // Transfer, rather than duplicate, this surface-water block into a finite flow.
-            if (!addFlowWater(outlet.x, sourceLevel, outlet.z, 0)) return false
-            set(outlet.sourceX, sourceLevel, outlet.sourceZ, EMPTY)
-            markWaterChunkDirty(outlet.sourceX, outlet.sourceZ)
+            // Keep the source in place until the first 400 ms movement tick. That makes
+            // the stream visibly originate at the pond lip instead of appearing midair.
+            const source = { x: outlet.sourceX, y: sourceLevel, z: outlet.sourceZ }
+            if (!addFlowWater(outlet.x, sourceLevel, outlet.z, 0, source)) return false
             selectedSources.add(sourceKey)
             selected.push(outlet)
             return true
         }
 
-        // Prefer exits in each of the four compass sectors, then use the best remaining drops.
+        // Choose outlets in different compass sectors before filling remaining slots.
         const sectors = [[], [], [], []]
         for (const outlet of outlets) sectors[outlet.sector].push(outlet)
         for (const sector of sectors) {
@@ -1238,23 +1354,28 @@ function updateWaterPhysics(dt) {
             continue
         }
 
+        // Spend the original pond-water block exactly when its outlet begins to move.
+        if (state.source) {
+            const source = state.source
+            if (isWaterBlock(get(source.x, source.y, source.z))) {
+                set(source.x, source.y, source.z, EMPTY)
+                markWaterChunkDirty(source.x, source.z)
+            }
+            state.source = null
+        }
+
         const below = y > 0 ? get(x, y - 1, z) : STONE
 
-        // Water falls by moving its single voxel downward. The old cell is always
-        // consumed, so waterfalls cannot act as an infinite source.
+        // Fall one voxel per 400 ms movement. The old cell is always consumed.
         if (y > 1 && below === EMPTY) {
-            if (addFlowWater(x, y - 1, z, state.horizontalSteps)) {
-                set(x, y, z, EMPTY)
-                markWaterChunkDirty(x, z)
-            } else {
-                set(x, y, z, EMPTY)
-                markWaterChunkDirty(x, z)
-            }
+            addFlowWater(x, y - 1, z, state.horizontalSteps)
+            set(x, y, z, EMPTY)
+            markWaterChunkDirty(x, z)
             flowingWater.delete(cell)
             continue
         }
 
-        // Flow merges into an existing water body; it does not create extra water.
+        // Existing water absorbs the moving voxel; it does not refill the source.
         if (isWaterBlock(below)) {
             set(x, y, z, EMPTY)
             markWaterChunkDirty(x, z)
@@ -1262,8 +1383,6 @@ function updateWaterPhysics(dt) {
             continue
         }
 
-        // A water voxel resting on solid ground fans out in the four cardinal
-        // directions. Each child inherits the path's horizontal budget.
         if (isSolid(x, y - 1, z)) {
             if (state.horizontalSteps >= WATER_MAX_HORIZONTAL_STEPS) {
                 set(x, y, z, EMPTY)
@@ -1276,19 +1395,17 @@ function updateWaterPhysics(dt) {
                 const nx = x + dx, nz = z + dz
                 if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
                 if (get(nx, y, nz) !== EMPTY) continue
-
                 addFlowWater(nx, y, nz, state.horizontalSteps + 1)
             }
 
-            // The parent is spent when its outgoing flow is created. If no path
-            // was available, the water is consumed rather than becoming a source.
+            // A source cell cannot remain after it has spent itself spreading.
             set(x, y, z, EMPTY)
             markWaterChunkDirty(x, z)
             flowingWater.delete(cell)
             continue
         }
 
-        // Unsupported cells at the lowest playable layer are consumed, never left floating.
+        // Never retain a cell with no support and no valid downward move.
         set(x, y, z, EMPTY)
         markWaterChunkDirty(x, z)
         flowingWater.delete(cell)
@@ -1740,7 +1857,7 @@ function addTrees() {
                 : forestRegion > 0.54 ? 0.021
                 : forestRegion > 0.38 ? 0.007
                 : 0.0014
-            const treeChance = inPineForest ? 0.050 + forestRegion * 0.010 : baseTreeChance * 0.90
+            const treeChance = inPineForest ? 0.043 + forestRegion * 0.008 : baseTreeChance * 0.90
             if (rand(x + 3313,z + 3323) > treeChance) continue
 
             const warmLowland = z / N > 0.48 && z / N < 0.94 && h <= seaLevel + 10
@@ -1749,12 +1866,10 @@ function addTrees() {
 
             if (tropicalCoast) {
                 placePalm(x,z,h)
-            } else if (inPineForest && rand(x + 3337,z + 3343) < 0.72) {
-                if (!placePineTree(x,z,h)) placeNormalTree(x,z,h)
-            } else if (forestRegion > 0.74 && plains < 0.22 && !coastal &&
-                       rand(x + 3347,z + 3359) < 0.20) {
+            } else if (inPineForest && rand(x + 3337,z + 3343) < 0.70) {
                 if (!placePineTree(x,z,h)) placeNormalTree(x,z,h)
             } else {
+                // Pines are biome-exclusive; plains and ordinary forests use oak trees.
                 placeNormalTree(x,z,h)
             }
         }
@@ -2559,6 +2674,97 @@ function updatePlayer(dt) {
     syncCamera(dt)
 }
 
+function seedForRegion(regionX, regionZ) {
+    const base = worldSeedBase === null ? seed : worldSeedBase
+    let value = (
+        Math.imul(regionX | 0, 73856093) ^
+        Math.imul(regionZ | 0, 19349663) ^
+        Math.imul(base | 0, 83492791)
+    ) >>> 0
+    value = Math.imul(value ^ (value >>> 16), 0x7feb352d) >>> 0
+    value = Math.imul(value ^ (value >>> 15), 0x846ca68b) >>> 0
+    value = (value ^ (value >>> 16)) >>> 0
+    return value % 2147483646 + 1
+}
+
+function startNewWorld() {
+    worldRegionX = 0
+    worldRegionZ = 0
+    worldSeedBase = null
+    requestedRegionSeed = null
+    pendingRegionSpawn = null
+    generate()
+}
+
+function showMainMenu() {
+    mainMenuOpen = true
+    const menu = document.getElementById('mainMenu')
+    menu.style.display = 'flex'
+    if (document.pointerLockElement === canvas) document.exitPointerLock()
+}
+
+function hideMainMenu() {
+    mainMenuOpen = false
+    document.getElementById('mainMenu').style.display = 'none'
+    status.textContent = document.pointerLockElement === canvas
+        ? 'Mouse captured. Press Esc to release.'
+        : 'Click the world to capture the mouse.'
+}
+
+function streamToRegion() {
+    if (mainMenuOpen || worldTransitioning) return
+
+    let nextX = playerX, nextZ = playerZ, changed = false
+    if (playerX < 5) {
+        worldRegionX--
+        nextX = N - 6
+        changed = true
+    } else if (playerX > N - 5) {
+        worldRegionX++
+        nextX = 5
+        changed = true
+    }
+    if (playerZ < 5) {
+        worldRegionZ--
+        nextZ = N - 6
+        changed = true
+    } else if (playerZ > N - 5) {
+        worldRegionZ++
+        nextZ = 5
+        changed = true
+    }
+    if (!changed) return
+
+    const savedYaw = yaw, savedPitch = pitch, savedFlight = creativeFlying
+    pendingRegionSpawn = { x: nextX, z: nextZ }
+    requestedRegionSeed = seedForRegion(worldRegionX, worldRegionZ)
+    worldTransitioning = true
+
+    const transition = document.getElementById('regionTransition')
+    transition.textContent = 'Entering region ' + worldRegionX + ', ' + worldRegionZ + '…'
+    transition.style.display = 'flex'
+    transition.style.opacity = '1'
+
+    requestAnimationFrame(() => {
+        generate()
+        yaw = savedYaw
+        pitch = savedPitch
+        creativeFlying = savedFlight
+        verticalVelocity = 0
+        syncCamera()
+        status.textContent = 'Region ' + worldRegionX + ', ' + worldRegionZ + ' · Seed ' + seed
+
+        window.setTimeout(() => {
+            transition.style.opacity = '0'
+            window.setTimeout(() => {
+                transition.style.display = 'none'
+                transition.style.opacity = '1'
+                worldTransitioning = false
+            }, 360)
+        }, 160)
+    })
+}
+
 function generate() {
     for (const m of meshes) m.dispose()
     meshes = []
@@ -2573,7 +2779,11 @@ function generate() {
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
 
-    seed = Math.floor(Math.random() * 2147483646) + 1
+    seed = Number.isInteger(requestedRegionSeed)
+        ? requestedRegionSeed
+        : Math.floor(Math.random() * 2147483646) + 1
+    requestedRegionSeed = null
+    if (worldSeedBase === null) worldSeedBase = seed
 
     voxels.fill(EMPTY)
     waterLevels.fill(EMPTY)
@@ -2596,21 +2806,31 @@ function generate() {
 
     let found = false
 
-    for (let radius = 0; radius < N / 2 && !found; radius++) {
-        for (let x = Math.max(2, Math.floor(N / 2 - radius));
-            x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
-            for (let z = Math.max(2, Math.floor(N / 2 - radius));
-                z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
-                if (heights[ci(x, z)] <= oceans[0].level) continue
-                const floor = findGround(x + .5, z + .5)
-                if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
+    if (pendingRegionSpawn) {
+        // Map borders are open ocean. Enter a newly seeded region at sea level,
+        // preventing a spawn inside terrain or an unloaded chunk.
+        playerX = pendingRegionSpawn.x
+        playerZ = pendingRegionSpawn.z
+        feetY = oceans[0].level + 0.25
+        pendingRegionSpawn = null
+        found = true
+    } else {
+        for (let radius = 0; radius < N / 2 && !found; radius++) {
+            for (let x = Math.max(2, Math.floor(N / 2 - radius));
+                x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
+                for (let z = Math.max(2, Math.floor(N / 2 - radius));
+                    z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
+                    if (heights[ci(x, z)] <= oceans[0].level) continue
+                    const floor = findGround(x + .5, z + .5)
+                    if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
 
-                if (canOccupy(x + .5, z + .5, floor)) {
-                    playerX = x + .5
-                    playerZ = z + .5
-                    feetY = floor
-                    found = true
-                    break
+                    if (canOccupy(x + .5, z + .5, floor)) {
+                        playerX = x + .5
+                        playerZ = z + .5
+                        feetY = floor
+                        found = true
+                        break
+                    }
                 }
             }
         }
@@ -2698,7 +2918,13 @@ document.addEventListener('mousemove', e => {
     syncCamera()
 })
 
-document.getElementById('g').addEventListener('click', generate)
+document.getElementById('g').addEventListener('click', startNewWorld)
+document.getElementById('m').addEventListener('click', showMainMenu)
+document.getElementById('playBtn').addEventListener('click', hideMainMenu)
+document.getElementById('newWorldBtn').addEventListener('click', () => {
+    startNewWorld()
+    hideMainMenu()
+})
 
 generate()
 
@@ -2707,12 +2933,15 @@ engine.runRenderLoop(() => {
     const dt = (now - previousTime) / 1000
     previousTime = now
 
-    updatePlayer(dt)
-    updateWaterPhysics(dt)
+    if (!mainMenuOpen && !worldTransitioning) {
+        updatePlayer(dt)
+        updateWaterPhysics(dt)
+        updateUnderwaterAtmosphere(dt)
+        streamToRegion()
+    }
     updateChunkLoading()
     processChunkBuildQueue()
     processDirtyWaterChunks()
-    updateUnderwaterAtmosphere(dt)
     scene.render()
 })
 
