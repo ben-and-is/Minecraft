@@ -446,7 +446,7 @@ function createWorldFeatures() {
         x: host.x + (rand(xKey, xKey + 7) - 0.5) * host.rx * fraction,
         z: host.z + (rand(zKey, zKey + 11) - 0.5) * host.rz * fraction
     })
-    if (mountainRoll < 0.05) {
+    if (mountainRoll < 0.06) {
         const host = chooseHostIsland(1485)
         const center = placeNearIsland(host, 1493, 1499, 0.34)
         mountains.push({
@@ -463,7 +463,7 @@ function createWorldFeatures() {
             caveCount: 3 + Math.floor(rand(1573, 1577) * 5),
             ridgeAmp: scale(1581, 7.2, 0.65)
         })
-    } else if (mountainRoll < 0.085) {
+    } else if (mountainRoll < 0.105) {
         const host = chooseHostIsland(1583)
         const center = placeNearIsland(host, 1589, 1597, 0.30)
         const styleRoll = rand(1601, 1607)
@@ -601,7 +601,7 @@ function plainsInfluence(x, z) {
 
 function isPineForestAt(x, z) {
     const biomeNoise = noise(x * 0.016 + seed * 0.011 + 73, z * 0.016 - seed * 0.017 + 29)
-    return biomeNoise > 0.70 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
+    return biomeNoise > 0.84 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
 }
 function irregularDistance(x, z, feature) {
     const warp = feature.warp || 0
@@ -1095,7 +1095,7 @@ function voxelize() {
 
 const WATER_STEP_INTERVAL = 0.08
 const WATER_CELLS_PER_STEP = 900
-const WATER_MAX_FLAT_SPREAD = 4
+const WATER_MAX_HORIZONTAL_STEPS = 3
 
 function markWaterChunkDirty(x, z) {
     const cx = Math.floor(x / CS)
@@ -1130,20 +1130,20 @@ function pruneFloatingWater() {
     return removed
 }
 
-function addFlowWater(x, y, z, flatSteps = 0, sourceOutlet = false, falling = false) {
+function addFlowWater(x, y, z, horizontalSteps = 0, falling = false) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { flatSteps, sourceOutlet, falling })
+    flowingWater.set(idx(x, y, z), { horizontalSteps, falling })
     markWaterChunkDirty(x, z)
     return true
 }
 
 function flowWaterDownhill() {
+    const seaLevel = oceans.length ? oceans[0].level : 12
     const sources = ponds
-        .filter(pond => !pond.disabled && (!pond.connected || pond.variableLevel) &&
-            Number.isFinite(pond.level))
+        .filter(pond => !pond.disabled && Number.isFinite(pond.level) && pond.level > seaLevel)
         .sort((a, b) => b.level - a.level)
 
     for (const pond of sources) {
@@ -1161,39 +1161,59 @@ function flowWaterDownhill() {
                 if (edge < 0.70 || edge > 1.08) continue
                 if (!isWaterBlock(get(x, sourceLevel, z))) continue
 
-                for (let dz = -1; dz <= 1; dz++) {
-                    for (let dx = -1; dx <= 1; dx++) {
-                        if (Math.abs(dx) + Math.abs(dz) !== 1) continue
-                        const nx = x + dx
-                        const nz = z + dz
-                        if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                        if (irregularDistance(nx, nz, pond) < 1.00) continue
-                        if (get(nx, sourceLevel, nz) !== EMPTY) continue
+                for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+                    const nx = x + dx, nz = z + dz
+                    if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+                    if (get(nx, sourceLevel, nz) !== EMPTY) continue
 
-                        const drop = sourceLevel - (heights[ci(nx, nz)] + 1)
-                        if (drop < 2) continue
-                        const score = drop / Math.hypot(dx, dz) +
-                            (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3 +
-                            rand(x + nx * 17 + 5603, z + nz * 19 + 5609) * 0.025
-
-                        outlets.push({ x: nx, z: nz, score, sourceX: x, sourceZ: z })
-                    }
+                    const drop = sourceLevel - (heights[ci(nx, nz)] + 1)
+                    if (drop < 2) continue
+                    const score = drop * 2 +
+                        (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3 +
+                        rand(x + nx * 17 + 5603, z + nz * 19 + 5609) * 0.025
+                    outlets.push({
+                        x: nx, z: nz, score,
+                        sourceX: x, sourceZ: z,
+                        sector: ((Math.floor((Math.atan2(z + 0.5 - pond.z, x + 0.5 - pond.x) + Math.PI) / (Math.PI / 2)) % 4) + 4) % 4
+                    })
                 }
             }
         }
 
         outlets.sort((a, b) => b.score - a.score)
         const selected = []
-        const maxOutlets = clamp(Math.ceil((pond.rx + pond.rz) / 9), 1, 5)
+        const selectedSources = new Set()
+        const maxOutlets = clamp(Math.ceil((pond.rx + pond.rz) / 9), 4, 8)
+        const minSpacing = 3.2
 
+        function tryOutlet(outlet) {
+            if (selected.length >= maxOutlets) return false
+            const sourceKey = ci(outlet.sourceX, outlet.sourceZ)
+            if (selectedSources.has(sourceKey)) return false
+            if (!isWaterBlock(get(outlet.sourceX, sourceLevel, outlet.sourceZ))) return false
+            if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) return false
+            if (selected.some(other => Math.hypot(other.sourceX - outlet.sourceX, other.sourceZ - outlet.sourceZ) < minSpacing)) return false
+
+            // Transfer, rather than duplicate, this surface-water block into a finite flow.
+            if (!addFlowWater(outlet.x, sourceLevel, outlet.z, 0, false)) return false
+            set(outlet.sourceX, sourceLevel, outlet.sourceZ, EMPTY)
+            markWaterChunkDirty(outlet.sourceX, outlet.sourceZ)
+            selectedSources.add(sourceKey)
+            selected.push(outlet)
+            return true
+        }
+
+        // Prefer exits in each of the four compass sectors, then use the best remaining drops.
+        const sectors = [[], [], [], []]
+        for (const outlet of outlets) sectors[outlet.sector].push(outlet)
+        for (const sector of sectors) {
+            for (const outlet of sector) {
+                if (tryOutlet(outlet)) break
+            }
+        }
         for (const outlet of outlets) {
             if (selected.length >= maxOutlets) break
-            if (get(outlet.sourceX, sourceLevel, outlet.sourceZ) === EMPTY) continue
-            if (!isWaterBlock(get(outlet.sourceX, sourceLevel, outlet.sourceZ))) continue
-            if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) continue
-            if (Math.abs(outlet.x - outlet.sourceX) + Math.abs(outlet.z - outlet.sourceZ) !== 1) continue
-            if (selected.some(other => Math.hypot(other.x - outlet.x, other.z - outlet.z) < 3.2)) continue
-            if (addFlowWater(outlet.x, sourceLevel, outlet.z, 0, true)) selected.push(outlet)
+            tryOutlet(outlet)
         }
     }
 }
@@ -1219,18 +1239,14 @@ function updateWaterPhysics(dt) {
         }
 
         const below = y > 0 ? get(x, y - 1, z) : STONE
-        if (y > 0 && below === EMPTY) {
-            // Keep a connected vertical fall in place while advancing its lower edge.
-            // A waterfall is a continuous column, not a single water block teleporting downward.
-            const added = y > 1 && addFlowWater(x, y - 1, z, state.flatSteps, false, true)
-            if (!added) {
-                // At the world floor (or if another cell blocked the fall), never leave a
-                // source/falling block suspended above an empty cell.
+
+        // Water falls by moving its single voxel downward. The old cell is always
+        // consumed, so waterfalls cannot act as an infinite source.
+        if (y > 1 && below === EMPTY) {
+            if (addFlowWater(x, y - 1, z, state.horizontalSteps, true)) {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
-            } else if (!state.sourceOutlet && !state.falling) {
-                // Ordinary surface-flow cells still move; only a waterfall's vertical
-                // segment is retained to make the fall visually continuous.
+            } else {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             }
@@ -1238,55 +1254,44 @@ function updateWaterPhysics(dt) {
             continue
         }
 
-        if (y > 0 && isWaterBlock(below)) {
-            if (!state.sourceOutlet && !state.falling) {
-                set(x, y, z, EMPTY)
-                markWaterChunkDirty(x, z)
-            }
-            // Retain waterfall blocks that now have water immediately below them.
+        // Flow merges into an existing water body; it does not create extra water.
+        if (isWaterBlock(below)) {
+            set(x, y, z, EMPTY)
+            markWaterChunkDirty(x, z)
             flowingWater.delete(cell)
             continue
         }
 
-        if (y > 0 && isSolid(x, y - 1, z)) {
-            const currentHeight = heights[ci(x, z)]
-            let next = null
-            let nextScore = -Infinity
-
-            for (let dz = -1; dz <= 1; dz++) {
-                for (let dx = -1; dx <= 1; dx++) {
-                    if (Math.abs(dx) + Math.abs(dz) !== 1) continue
-                    const nx = x + dx
-                    const nz = z + dz
-                    if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                    if (get(nx, y, nz) !== EMPTY) continue
-
-                    const targetBelow = y > 0 ? get(nx, y - 1, nz) : STONE
-                    const targetSupported = isSolid(nx, y - 1, nz) || isWaterBlock(targetBelow)
-                    const targetHeight = heights[ci(nx, nz)]
-                    const downhill = targetHeight < currentHeight || !targetSupported
-                    const flat = targetHeight === currentHeight && targetSupported &&
-                        state.flatSteps < WATER_MAX_FLAT_SPREAD
-                    if (!downhill && !flat) continue
-                    if (targetSupported && targetHeight > currentHeight + 1) continue
-
-                    const score = (currentHeight - targetHeight) * 4 +
-                        (!targetSupported ? 2.5 : 0) +
-                        rand(nx + y * 13 + cell * 0.0001, nz - y * 17 + cell * 0.0002) * 0.2
-                    if (score > nextScore) {
-                        nextScore = score
-                        next = {
-                            x: nx,
-                            z: nz,
-                            flatSteps: targetHeight < currentHeight ? 0 : state.flatSteps + 1
-                        }
-                    }
-                }
+        // A water voxel resting on solid ground fans out in the four cardinal
+        // directions. Each child inherits the path's horizontal budget.
+        if (isSolid(x, y - 1, z)) {
+            if (state.horizontalSteps >= WATER_MAX_HORIZONTAL_STEPS) {
+                set(x, y, z, EMPTY)
+                markWaterChunkDirty(x, z)
+                flowingWater.delete(cell)
+                continue
             }
 
-            if (next) addFlowWater(next.x, y, next.z, next.flatSteps)
+            let spread = 0
+            for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+                const nx = x + dx, nz = z + dz
+                if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+                if (get(nx, y, nz) !== EMPTY) continue
+
+                if (addFlowWater(nx, y, nz, state.horizontalSteps + 1, false)) spread++
+            }
+
+            // The parent is spent when its outgoing flow is created. If no path
+            // was available, the water is consumed rather than becoming a source.
+            set(x, y, z, EMPTY)
+            markWaterChunkDirty(x, z)
+            flowingWater.delete(cell)
+            continue
         }
 
+        // Unsupported cells at the lowest playable layer are consumed, never left floating.
+        set(x, y, z, EMPTY)
+        markWaterChunkDirty(x, z)
         flowingWater.delete(cell)
     }
 }
