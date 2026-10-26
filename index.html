@@ -1258,6 +1258,8 @@ function flowWaterDownhill() {
         .filter(pond => !pond.disabled && Number.isFinite(pond.level) && pond.level > seaLevel)
         .sort((a, b) => b.level - a.level)
 
+    const reservedOutletSources = new Set()
+
     for (const pond of sources) {
         const sourceLevel = Math.round(pond.level)
         const margin = (pond.warp || 0) + 3
@@ -1297,13 +1299,13 @@ function flowWaterDownhill() {
 
         outlets.sort((a, b) => b.score - a.score)
         const selected = []
-        const selectedSources = new Set()
+        const selectedSources = reservedOutletSources
         const maxOutlets = clamp(Math.ceil((pond.rx + pond.rz) / 9), 4, 8)
         const minSpacing = 3.2
 
         function tryOutlet(outlet) {
             if (selected.length >= maxOutlets) return false
-            const sourceKey = ci(outlet.sourceX, outlet.sourceZ)
+            const sourceKey = idx(outlet.sourceX, sourceLevel, outlet.sourceZ)
             if (selectedSources.has(sourceKey)) return false
             if (!isWaterBlock(get(outlet.sourceX, sourceLevel, outlet.sourceZ))) return false
             if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) return false
@@ -2676,6 +2678,7 @@ function updatePlayer(dt) {
 
 function seedForRegion(regionX, regionZ) {
     const base = worldSeedBase === null ? seed : worldSeedBase
+    if (regionX === 0 && regionZ === 0) return base
     let value = (
         Math.imul(regionX | 0, 73856093) ^
         Math.imul(regionZ | 0, 19349663) ^
