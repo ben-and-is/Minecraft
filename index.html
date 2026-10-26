@@ -1111,12 +1111,31 @@ function markWaterChunkDirty(x, z) {
     }
 }
 
-function addFlowWater(x, y, z, flatSteps = 0, sourceOutlet = false) {
+function pruneFloatingWater() {
+    // Terrain fissures and mountain caves are carved after voxelized water is placed.
+    // Remove any water column whose lowest block has been left over open air.
+    // Scan bottom-up so once a floating column's base is removed, every block above it
+    // is checked against the now-empty cell below and removed as well.
+    let removed = 0
+    for (let y = 1; y < H; y++) {
+        for (let x = 1; x < N - 1; x++) {
+            for (let z = 1; z < N - 1; z++) {
+                if (!isWaterBlock(get(x, y, z))) continue
+                if (get(x, y - 1, z) !== EMPTY) continue
+                set(x, y, z, EMPTY)
+                removed++
+            }
+        }
+    }
+    return removed
+}
+
+function addFlowWater(x, y, z, flatSteps = 0, sourceOutlet = false, falling = false) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { flatSteps, sourceOutlet })
+    flowingWater.set(idx(x, y, z), { flatSteps, sourceOutlet, falling })
     markWaterChunkDirty(x, z)
     return true
 }
@@ -1201,7 +1220,17 @@ function updateWaterPhysics(dt) {
 
         const below = y > 0 ? get(x, y - 1, z) : STONE
         if (y > 0 && below === EMPTY) {
-            if (addFlowWater(x, y - 1, z, state.flatSteps) && !state.sourceOutlet) {
+            // Keep a connected vertical fall in place while advancing its lower edge.
+            // A waterfall is a continuous column, not a single water block teleporting downward.
+            const added = y > 1 && addFlowWater(x, y - 1, z, state.flatSteps, false, true)
+            if (!added) {
+                // At the world floor (or if another cell blocked the fall), never leave a
+                // source/falling block suspended above an empty cell.
+                set(x, y, z, EMPTY)
+                markWaterChunkDirty(x, z)
+            } else if (!state.sourceOutlet && !state.falling) {
+                // Ordinary surface-flow cells still move; only a waterfall's vertical
+                // segment is retained to make the fall visually continuous.
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             }
@@ -1210,10 +1239,11 @@ function updateWaterPhysics(dt) {
         }
 
         if (y > 0 && isWaterBlock(below)) {
-            if (!state.sourceOutlet) {
+            if (!state.sourceOutlet && !state.falling) {
                 set(x, y, z, EMPTY)
                 markWaterChunkDirty(x, z)
             }
+            // Retain waterfall blocks that now have water immediately below them.
             flowingWater.delete(cell)
             continue
         }
@@ -2555,6 +2585,7 @@ function generate() {
     carveMountainCaves()
     addTrees()
     pruneFloatingArtifacts()
+    pruneFloatingWater()
     flowWaterDownhill()
 
     decorationBuffersByChunk = addGroundDecorations()
