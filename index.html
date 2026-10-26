@@ -1585,111 +1585,57 @@ function addTrees() {
     }
 
     function placePalm(x, z, h) {
-        const height = 4 + Math.floor(rand(x + 3137, z + 3163) * 4)
-        const top = h + height
-        if (top + 6 >= H) return
-        for (let y = h + 1; y <= top; y++) {
-            if (get(x, y, z) !== EMPTY) return
-        }
-        for (let y = h + 1; y <= top; y++) set(x, y, z, PALM_WOOD)
-
-        const rotation = rand(x + 3167, z + 3169) * Math.PI * 2
-        const fronds = 8 + Math.floor(rand(x + 3181, z + 3187) * 4)
-        for (let f = 0; f < fronds; f++) {
-            const angle = rotation + f * Math.PI * 2 / fronds
-            const dx = Math.cos(angle), dz = Math.sin(angle)
-            const length = 3 + Math.floor(rand(x + f * 37 + 3191, z + f * 41 + 3203) * 3)
-            for (let d = 1; d <= length; d++) {
-                const px = Math.round(x + dx * d)
-                const pz = Math.round(z + dz * d)
-                const py = top + 1 - Math.floor(d * 0.38)
-                setIfClear(px, py, pz, PALM_LEAVES)
-                if (d >= 2 && d <= length - 1) {
-                    setIfClear(px + Math.round(-dz), py - 1, pz + Math.round(dx), PALM_LEAVES)
-                    setIfClear(px - Math.round(-dz), py - 1, pz - Math.round(dx), PALM_LEAVES)
-                }
-            }
-        }
-        const coconuts = 1 + Math.floor(rand(x + 3217, z + 3221) * 3)
-        for (let c = 0; c < coconuts; c++) {
-            const angle = rotation + c * Math.PI * 2 / coconuts
-            setIfClear(x + Math.round(Math.cos(angle)), top - 1, z + Math.round(Math.sin(angle)), WOOD)
-        }
+        return placeNormalTree(x, z, h)
     }
 
     function placeNormalTree(x, z, h) {
-        const trunk = 4 + Math.floor(rand(x + 47, z + 31) * 3)
-        const top = h + trunk
-        if (top + 3 >= H) return false
-        for (let y = h + 1; y <= top + 2; y++) {
-            if (get(x, y, z) !== EMPTY) return false
-        }
-        for (let y = h + 1; y <= top; y++) set(x, y, z, WOOD)
+        // Tree structure follows the supplied 5x5 template, with total height randomized to 4–6 blocks.
+        const treeHeight = 4 + Math.floor(rand(x + 47, z + 31) * 3)
+        if (h + treeHeight >= H) return false
 
-        for (let dy = -1; dy <= 1; dy++) {
-            const radius = dy === 1 ? 1 : 2
-            for (let dx = -radius; dx <= radius; dx++) {
-                for (let dz = -radius; dz <= radius; dz++) {
-                    if (radius === 2 && Math.abs(dx) === radius && Math.abs(dz) === radius) continue
-                    setIfClear(x + dx, top + dy, z + dz, LEAVES)
+        const cells = []
+        const addCell = (dx, dy, dz, type) => cells.push({ x: x + dx, y: h + 1 + dy, z: z + dz, type })
+        const addBroadCanopyLayer = dy => {
+            for (let dx = -2; dx <= 2; dx++) {
+                for (let dz = -2; dz <= 2; dz++) {
+                    if (Math.abs(dx) === 2 && Math.abs(dz) === 2) continue
+                    addCell(dx, dy, dz, dx === 0 && dz === 0 ? WOOD : LEAVES)
                 }
             }
         }
-        setIfClear(x, top + 2, z, LEAVES)
+        const addUpperCanopyLayer = dy => {
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dz = -1; dz <= 1; dz++) addCell(dx, dy, dz, LEAVES)
+            }
+        }
+
+        addCell(0, 0, 0, WOOD)
+        addCell(0, 1, 0, WOOD)
+        addBroadCanopyLayer(2)
+
+        if (treeHeight === 6) {
+            // Exact supplied template: two broad canopy layers, a 3x3 upper layer, and a top leaf.
+            addBroadCanopyLayer(3)
+            addUpperCanopyLayer(4)
+            addCell(0, 5, 0, LEAVES)
+        } else {
+            addUpperCanopyLayer(3)
+            if (treeHeight === 5) addCell(0, 4, 0, LEAVES)
+        }
+
+        // Only place the tree if every template cell is clear, avoiding partial canopies or overwriting terrain.
+        for (const cell of cells) {
+            if (cell.x < 0 || cell.x >= N || cell.z < 0 || cell.z >= N ||
+                cell.y < 0 || cell.y >= H || get(cell.x, cell.y, cell.z) !== EMPTY) {
+                return false
+            }
+        }
+        for (const cell of cells) set(cell.x, cell.y, cell.z, cell.type)
         return true
     }
 
     function placeDarkOak(x, z, h) {
-        if (x + 2 >= N - 1 || z + 2 >= N - 1) return false
-        const baseCols = [[x,z],[x+1,z],[x,z+1],[x+1,z+1]]
-        for (const [tx,tz] of baseCols) {
-            if (heights[ci(tx,tz)] !== h || !isGrassBlock(get(tx,h,tz))) return false
-        }
-        const height = 8 + Math.floor(rand(x + 3251, z + 3257) * 5)
-        const top = h + height
-        if (top + 5 >= H) return false
-        for (const [tx,tz] of baseCols) {
-            for (let y=h+1; y<=top+1; y++) if (get(tx,y,tz)!==EMPTY) return false
-        }
-        for (const [tx,tz] of baseCols) for (let y=h+1; y<=top; y++) set(tx,y,tz,DARK_WOOD)
-
-        const branchY = h + Math.floor(height * 0.62)
-        const directions = [
-            { dx: 1, dz: 0, sx: x + 1, sz: z },
-            { dx: -1, dz: 0, sx: x, sz: z + 1 },
-            { dx: 0, dz: 1, sx: x, sz: z + 1 },
-            { dx: 0, dz: -1, sx: x + 1, sz: z }
-        ]
-        for (let b = 0; b < directions.length; b++) {
-            if (rand(x + 5459 + b * 13, z + 5471 + b * 17) < 0.38) continue
-            const dir = directions[b]
-            const length = 2 + Math.floor(rand(x + 5483 + b * 19, z + 5489 + b * 23) * 2)
-            for (let d = 1; d <= length; d++) {
-                const bx = dir.sx + dir.dx * d, bz = dir.sz + dir.dz * d
-                if (get(bx, branchY, bz) !== EMPTY) break
-                set(bx, branchY, bz, DARK_WOOD)
-            }
-        }
-        const crownLayers = [
-            { dy: -4, radius: 1.8 }, { dy: -3, radius: 2.7 },
-            { dy: -2, radius: 3.5 }, { dy: -1, radius: 4.1 },
-            { dy: 0, radius: 4.0 }, { dy: 1, radius: 3.3 },
-            { dy: 2, radius: 2.4 }, { dy: 3, radius: 1.25 }
-        ]
-        for (const layer of crownLayers) {
-            for (let dx = -4; dx <= 4; dx++) for (let dz = -4; dz <= 4; dz++) {
-                const nx = (dx + 0.5) / layer.radius, nz = (dz + 0.5) / layer.radius
-                const shape = nx * nx + nz * nz
-                if (shape > 1.15) continue
-                const edgeNoise = rand(x + 5519 + dx * 17 + layer.dy * 101,
-                    z + 5521 + dz * 19 + layer.dy * 103)
-                if (shape > 0.78 && edgeNoise > 0.56) continue
-                setIfClear(x + dx, top + layer.dy, z + dz, DARK_LEAVES)
-            }
-        }
-        setIfClear(x, top + 2, z, DARK_LEAVES)
-        setIfClear(x + 1, top + 2, z + 1, DARK_LEAVES)
-        return true
+        return placeNormalTree(x, z, h)
     }
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
