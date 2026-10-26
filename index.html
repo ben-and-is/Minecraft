@@ -1416,14 +1416,9 @@ function updateWaterfallStreams() {
 
         // No unreserved source water remains: consume the lip and retract the fall from
         // its bottom upward so it stays attached to its source until the final movement.
-        if (!stream.drying) {
-            stream.drying = true
-            if (isWaterBlock(get(stream.sourceX, stream.sourceLevel, stream.sourceZ))) {
-                set(stream.sourceX, stream.sourceLevel, stream.sourceZ, EMPTY)
-                markWaterChunkDirty(stream.sourceX, stream.sourceZ)
-            }
-            waterfallSourceKeys.delete(stream.sourceKey)
-        }
+        // Keep the top attached to the pond while the finite column retracts from below.
+        // The lip itself is consumed only after the last waterfall voxel is gone.
+        stream.drying = true
 
         const lowestCell = idx(stream.x, stream.bottomY, stream.z)
         if (isWaterBlock(get(stream.x, stream.bottomY, stream.z))) {
@@ -1434,6 +1429,11 @@ function updateWaterfallStreams() {
         stream.bottomY++
 
         if (stream.bottomY > stream.topY) {
+            if (isWaterBlock(get(stream.sourceX, stream.sourceLevel, stream.sourceZ))) {
+                set(stream.sourceX, stream.sourceLevel, stream.sourceZ, EMPTY)
+                markWaterChunkDirty(stream.sourceX, stream.sourceZ)
+            }
+            waterfallSourceKeys.delete(stream.sourceKey)
             waterfallStreams.delete(stream.id)
         }
     }
