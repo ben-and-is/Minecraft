@@ -213,6 +213,7 @@ const MAX_CHUNK_BUILDS_PER_FRAME = 3
 const MAX_LOADED_CHUNKS = 400
 const CHUNK_RENDER_RADIUS = 5
 const CHUNKS_PER_AXIS = Math.ceil(N / CS)
+const MAX_CACHED_REGION_DATA = 4
 
 const WATCHTOWER_ROWS = [
     ["..s....",".wwwww.",".wpssw.",".wpssw.",".wsssw.",".wwwww.","......."],
@@ -249,6 +250,34 @@ const WATCHTOWER_STRUCTURE = {
                 if (symbol === "w") return [{ pos: [x, y, z], type: "wood", id: 3 }]
                 if (symbol === "p") return [{ pos: [x, y, z], type: "palm_wood", id: 8 }]
                 throw new Error("Unknown watchtower template symbol: " + symbol)
+            })
+        )
+    )
+}
+
+const ANCIENT_RUIN_ROWS = [
+    ["sss.....sss", "sssdddddsss", "sssdddddsss", ".ddddddddd.", ".ddddddddd.", ".ddddddddd.", ".ddddddwdd.", ".ddddddddd.", "sssdddddsss", "sssdddddsss", "sss.....sss"],
+    ["...........", ".ss.....ss.", ".sssssssss.", "..ssgggss..", "..sgggggs..", "..sgggggs..", "..sgggwws..", "..ssggwss..", ".sssssssss.", ".ss.....ss.", "..........."],
+    ["...........", "...........", "...........", "......l....", "...lsss....", "....l......", "...........", "...........", "...........", "...........", "..........."],
+    ["...........", "...........", "...........", "...........", "....lss....", "...........", "...........", "...........", "...........", "...........", "..........."],
+    ["...........", "...........", "...........", "...........", ".....ssl...", ".....l.....", "...........", "...........", "...........", "...........", "..........."],
+    ["...........", "...........", "...........", "...........", ".....sl....", "...........", "...........", "...........", "...........", "..........."]
+]
+const ANCIENT_RUIN_STRUCTURE = {
+    format: "voxel-structure-v1",
+    size: [11, 6, 11],
+    origin: [-9, 0, -11],
+    // . = empty, s = stone, d = dirt, g = grass, w = fresh water, l = leaves.
+    blocks: ANCIENT_RUIN_ROWS.flatMap((layer, y) =>
+        layer.flatMap((row, z) =>
+            Array.from(row).flatMap((symbol, x) => {
+                if (symbol === ".") return []
+                if (symbol === "s") return [{ pos: [x, y, z], type: "stone", id: 2 }]
+                if (symbol === "d") return [{ pos: [x, y, z], type: "dirt", id: 1 }]
+                if (symbol === "g") return [{ pos: [x, y, z], type: "grass", id: 0 }]
+                if (symbol === "w") return [{ pos: [x, y, z], type: "fresh_water", id: 7 }]
+                if (symbol === "l") return [{ pos: [x, y, z], type: "leaves", id: 4 }]
+                throw new Error("Unknown ancient ruin template symbol: " + symbol)
             })
         )
     )
@@ -310,15 +339,17 @@ const decorationMaterials = ['grass-details', 'flower-details', 'mushroom-detail
     return m
 })
 
-const voxels = new Int8Array(N * N * H)
-const heights = new Int16Array(N * N)
-const waterLevels = new Int8Array(N * N)
+let voxels = new Int8Array(N * N * H)
+let heights = new Int16Array(N * N)
+let waterLevels = new Int8Array(N * N)
 let meshes = []
 let chunkMeshes = new Map()
 let desiredChunkKeys = new Set()
 let pendingChunkQueue = []
 let structureFootprints = []
 let regionStateCache = new Map()
+let generatedRegionCache = new Map()
+let currentRegionData = null
 let voxelEdits = new Map()
 let trackVoxelEdits = false
 let flowingWater = new Map()
@@ -1129,18 +1160,34 @@ function createPonds() {
             }
         }
 
-        // Close gaps in irregular lake banks with a continuous raised shoreline.
+        // Form a rough, cliff-backed cup around elevated freshwater. The inner lip
+        // stays above the water surface; a noisy outer slope breaks the perfect-ring look.
+        // createRiverChannels() runs afterward and can still cut natural spillways out.
         if (!pond.disabled && pond.level > seaLevel + 1) {
-            const bankLevel = Math.min(H - 7, Math.round(pond.level + 2))
-            const bankMargin = (pond.warp || 0) + 4
-            const bankX0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.55 - bankMargin))
-            const bankX1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.55 + bankMargin))
-            const bankZ0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.55 - bankMargin))
-            const bankZ1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.55 + bankMargin))
+            const bankMargin = (pond.warp || 0) + 5
+            const bankX0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.70 - bankMargin))
+            const bankX1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.70 + bankMargin))
+            const bankZ0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.70 - bankMargin))
+            const bankZ1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.70 + bankMargin))
             for (let x = bankX0; x <= bankX1; x++) {
                 for (let z = bankZ0; z <= bankZ1; z++) {
                     const edge = irregularDistance(x, z, pond)
-                    if (edge <= 1.0 || edge > 1.48) continue
+                    const roughness = noise(
+                        x * 0.061 + pond.x * 0.17,
+                        z * 0.061 + pond.z * 0.17
+                    )
+                    const outerEdge = 1.52 + (roughness - 0.5) * 0.16
+                    if (edge <= 0.98 || edge > outerEdge) continue
+                    const shoreT = clamp((edge - 0.98) / (outerEdge - 0.98), 0, 1)
+                    const jaggedLip = (noise(
+                        x * 0.13 + pond.z * 0.09 + 7.3,
+                        z * 0.13 + pond.x * 0.09 + 3.1
+                    ) - 0.5) * 2.2
+                    const cliffRise = 2.4 + (1 - shoreT) * 1.8 + jaggedLip
+                    const bankLevel = Math.min(
+                        H - 7,
+                        Math.round(pond.level + Math.max(1.5, cliffRise))
+                    )
                     const col = ci(x, z)
                     heights[col] = Math.max(heights[col], bankLevel)
                 }
@@ -1292,8 +1339,8 @@ const WATER_CELLS_PER_STEP = 4096
 const WATER_MAX_HORIZONTAL_STEPS = 7
 
 function markWaterChunkDirty(x, z) {
-    const cx = Math.floor(x / CS)
-    const cz = Math.floor(z / CS)
+    const cx = worldRegionX * CHUNKS_PER_AXIS + Math.floor(x / CS)
+    const cz = worldRegionZ * CHUNKS_PER_AXIS + Math.floor(z / CS)
     const chunks = new Set([cx + ',' + cz])
     if (x % CS === 0) chunks.add((cx - 1) + ',' + cz)
     if (x % CS === CS - 1) chunks.add((cx + 1) + ',' + cz)
@@ -2074,6 +2121,93 @@ function addTrees() {
 
     const watchtowerPlacement = placeWatchtower()
 
+    function placeAncientRuin() {
+        // An uncommon, fixed-layout ruin may appear on an eligible plains site per region.
+        if (rand(7103 + worldRegionX * 13, 7109 + worldRegionZ * 17) > 0.65) return null
+        const seaLevel = oceans[0].level
+        const width = ANCIENT_RUIN_STRUCTURE.size[0]
+        const depth = ANCIENT_RUIN_STRUCTURE.size[2]
+        let best = null
+        let bestScore = -Infinity
+
+        for (let x = 10; x <= N - width - 10; x += 5) {
+            for (let z = 10; z <= N - depth - 10; z += 5) {
+                let plainsCount = 0
+                let minHeight = H
+                let maxHeight = 0
+                let heightSum = 0
+                let valid = true
+                for (let dx = 0; dx < width && valid; dx++) {
+                    for (let dz = 0; dz < depth; dz++) {
+                        const wx = x + dx, wz = z + dz
+                        if (isInsideStructureFootprint(wx, wz)) { valid = false; break }
+                        const groundY = heights[ci(wx, wz)]
+                        const groundType = get(wx, groundY, wz)
+                        if (groundY <= seaLevel + 1 || !isGrassBlock(groundType) ||
+                            isWaterBlock(get(wx, groundY + 1, wz)) ||
+                            desertInfluenceAt(wx, wz) > 0.28) {
+                            valid = false
+                            break
+                        }
+                        if (plainsInfluence(wx, wz) > 0.45) plainsCount++
+                        minHeight = Math.min(minHeight, groundY)
+                        maxHeight = Math.max(maxHeight, groundY)
+                        heightSum += groundY
+                    }
+                }
+                if (!valid || plainsCount < width * depth * 0.64 || maxHeight - minHeight > 3) continue
+                const score = plainsCount * 10 - (maxHeight - minHeight) * 25 +
+                    rand(x + 7117, z + 7121) * 0.1
+                if (score > bestScore) {
+                    bestScore = score
+                    best = { x, z, heightSum }
+                }
+            }
+        }
+        if (!best) return null
+        const groundY = Math.round(best.heightSum / (width * depth))
+        const baseY = groundY + 1
+        if (baseY + ANCIENT_RUIN_STRUCTURE.size[1] - 1 >= H) return null
+
+        for (let dx = 0; dx < width; dx++) {
+            for (let dz = 0; dz < depth; dz++) {
+                const wx = best.x + dx, wz = best.z + dz
+                const oldHeight = heights[ci(wx, wz)]
+                for (let wy = Math.max(baseY, oldHeight + 1);
+                    wy < baseY + ANCIENT_RUIN_STRUCTURE.size[1]; wy++) {
+                    if (get(wx, wy, wz) !== EMPTY) return null
+                }
+            }
+        }
+        for (let dx = 0; dx < width; dx++) {
+            for (let dz = 0; dz < depth; dz++) {
+                const wx = best.x + dx, wz = best.z + dz
+                const col = ci(wx, wz)
+                const oldHeight = heights[col]
+                if (oldHeight > groundY) {
+                    for (let y = groundY + 1; y <= oldHeight; y++) set(wx, y, wz, EMPTY)
+                } else if (oldHeight < groundY) {
+                    for (let y = oldHeight + 1; y < groundY; y++) set(wx, y, wz, DIRT)
+                }
+                set(wx, groundY, wz, GRASS)
+                heights[col] = groundY
+                waterLevels[col] = EMPTY
+            }
+        }
+        for (const block of ANCIENT_RUIN_STRUCTURE.blocks) {
+            set(best.x + block.pos[0], baseY + block.pos[1], best.z + block.pos[2], block.id)
+        }
+        structureFootprints.push({
+            minX: best.x, maxX: best.x + width - 1,
+            minZ: best.z, maxZ: best.z + depth - 1,
+            baseY,
+            name: "ancient-ruin-1"
+        })
+        return { x: best.x, z: best.z, baseY }
+    }
+
+    const ancientRuinPlacement = placeAncientRuin()
+
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
             const col = ci(x,z), h = heights[col]
@@ -2367,7 +2501,7 @@ const faces = [
     { d: [0, 0, -1], v: [[1, 0, 0], [0, 0, 0], [0, 1, 0], [1, 1, 0]] }
 ]
 
-function createBufferedMesh(name, data, material, chunkList, isWater = false) {
+function createBufferedMesh(name, data, material, chunkList, isWater = false, offsetX = 0, offsetZ = 0) {
     if (!data.p.length) return
     const mesh = new BABYLON.Mesh(name, scene)
     const vertexData = new BABYLON.VertexData()
@@ -2378,7 +2512,7 @@ function createBufferedMesh(name, data, material, chunkList, isWater = false) {
     vertexData.indices = data.i
     vertexData.applyToMesh(mesh, false)
     mesh.material = material
-    mesh.position.y = YOFF
+    mesh.position.set(offsetX, YOFF, offsetZ)
     mesh.isPickable = false
     mesh.checkCollisions = false
     mesh.alwaysSelectAsActiveMesh = false
@@ -2392,19 +2526,35 @@ function createBufferedMesh(name, data, material, chunkList, isWater = false) {
 
 function buildChunk(cx, cz) {
     const key = cx + ',' + cz
+    const regionX = Math.floor(cx / CHUNKS_PER_AXIS)
+    const regionZ = Math.floor(cz / CHUNKS_PER_AXIS)
+    const localCX = cx - regionX * CHUNKS_PER_AXIS
+    const localCZ = cz - regionZ * CHUNKS_PER_AXIS
+    const data = getRegionData(regionX, regionZ)
     const chunkList = []
     const groups = Array.from({ length: MCOUNT }, () => ({
         p: [], n: [], u: [], c: [], i: []
     }))
-
-    const x0 = cx * CS, z0 = cz * CS
+    const x0 = localCX * CS, z0 = localCZ * CS
     const x1 = Math.min(N, x0 + CS), z1 = Math.min(N, z0 + CS)
+    const offsetX = (regionX - worldRegionX) * N
+    const offsetZ = (regionZ - worldRegionZ) * N
+
+    function blockAt(x, y, z) {
+        if (y < 0 || y >= H) return EMPTY
+        if (x < 0 || x >= N || z < 0 || z >= N) {
+            const seaLevel = data.oceans.length ? data.oceans[0].level : 12
+            return y <= seaLevel ? WATER : EMPTY
+        }
+        return data.voxels[idx(x, y, z)]
+    }
+
     let maxY = 0
     for (let y = H - 1; y >= 0; y--) {
         let foundOccupied = false
         for (let z = z0; z < z1 && !foundOccupied; z++) {
             for (let x = x0; x < x1; x++) {
-                if (get(x, y, z) !== EMPTY) {
+                if (blockAt(x, y, z) !== EMPTY) {
                     foundOccupied = true
                     break
                 }
@@ -2419,18 +2569,10 @@ function buildChunk(cx, cz) {
     for (let y = 0; y <= maxY; y++) {
         for (let z = z0; z < z1; z++) {
             for (let x = x0; x < x1; x++) {
-                const type = get(x, y, z)
+                const type = blockAt(x, y, z)
                 if (type === EMPTY) continue
                 for (const face of faces) {
-                    const neighborX = x + face.d[0]
-                    const neighborZ = z + face.d[2]
-                    const neighborY = y + face.d[1]
-                    const outsideSector = neighborX < 0 || neighborX >= N ||
-                        neighborZ < 0 || neighborZ >= N
-                    const neighbor = outsideSector && neighborY >= 0 &&
-                        neighborY <= (oceans[0] ? oceans[0].level : 12)
-                        ? WATER
-                        : get(neighborX, neighborY, neighborZ)
+                    const neighbor = blockAt(x + face.d[0], y + face.d[1], z + face.d[2])
                     if (isWaterBlock(type)) {
                         if (neighbor !== EMPTY) continue
                     } else if (neighbor !== EMPTY && !isWaterBlock(neighbor)) {
@@ -2453,18 +2595,19 @@ function buildChunk(cx, cz) {
 
     for (let type = 0; type < MCOUNT; type++) {
         createBufferedMesh('chunk_' + cx + '_' + cz + '_' + type,
-            groups[type], materials[type], chunkList, isWaterBlock(type))
+            groups[type], materials[type], chunkList, isWaterBlock(type), offsetX, offsetZ)
     }
 
-    const decorationBuffers = decorationBuffersByChunk.get(key)
+    const localKey = localCX + ',' + localCZ
+    const decorationBuffers = data.decorationBuffersByChunk.get(localKey)
     if (decorationBuffers) {
-        createBufferedMesh('grass_details_' + key, decorationBuffers.grass, decorationMaterials[0], chunkList)
-        createBufferedMesh('flower_details_' + key, decorationBuffers.flower, decorationMaterials[1], chunkList)
-        createBufferedMesh('mushroom_details_' + key, decorationBuffers.mushroom, decorationMaterials[2], chunkList)
+        createBufferedMesh('grass_details_' + key, decorationBuffers.grass, decorationMaterials[0], chunkList, false, offsetX, offsetZ)
+        createBufferedMesh('flower_details_' + key, decorationBuffers.flower, decorationMaterials[1], chunkList, false, offsetX, offsetZ)
+        createBufferedMesh('mushroom_details_' + key, decorationBuffers.mushroom, decorationMaterials[2], chunkList, false, offsetX, offsetZ)
     }
-
     return chunkList
 }
+
 
 function unloadChunk(key) {
     dirtyWaterChunks.delete(key)
@@ -2479,13 +2622,13 @@ function unloadChunk(key) {
 }
 
 function updateChunkLoading(force = false) {
-    const centerX = clamp(Math.floor(playerX / CS), 0, CHUNKS_PER_AXIS - 1)
-    const centerZ = clamp(Math.floor(playerZ / CS), 0, CHUNKS_PER_AXIS - 1)
+    const centerX = worldRegionX * CHUNKS_PER_AXIS + Math.floor(playerX / CS)
+    const centerZ = worldRegionZ * CHUNKS_PER_AXIS + Math.floor(playerZ / CS)
     if (!force && centerX === lastChunkCenterX && centerZ === lastChunkCenterZ) return
 
     const wanted = []
-    for (let cz = Math.max(0, centerZ - CHUNK_RENDER_RADIUS); cz <= Math.min(CHUNKS_PER_AXIS - 1, centerZ + CHUNK_RENDER_RADIUS); cz++) {
-        for (let cx = Math.max(0, centerX - CHUNK_RENDER_RADIUS); cx <= Math.min(CHUNKS_PER_AXIS - 1, centerX + CHUNK_RENDER_RADIUS); cx++) {
+    for (let cz = centerZ - CHUNK_RENDER_RADIUS; cz <= centerZ + CHUNK_RENDER_RADIUS; cz++) {
+        for (let cx = centerX - CHUNK_RENDER_RADIUS; cx <= centerX + CHUNK_RENDER_RADIUS; cx++) {
             const dx = cx - centerX, dz = cz - centerZ
             if (dx * dx + dz * dz <= CHUNK_RENDER_RADIUS * CHUNK_RENDER_RADIUS) {
                 wanted.push({ cx, cz, distance: dx * dx + dz * dz, key: cx + ',' + cz })
@@ -2552,8 +2695,8 @@ function overlapsSolid(x, z, feet) {
 }
 
 function canOccupy(x, z, feet) {
-    if (x - PLAYER_RADIUS < 0 || x + PLAYER_RADIUS > N ||
-        z - PLAYER_RADIUS < 0 || z + PLAYER_RADIUS > N ||
+    if (x < -PLAYER_RADIUS - EPS || x > N + PLAYER_RADIUS + EPS ||
+        z < -PLAYER_RADIUS - EPS || z > N + PLAYER_RADIUS + EPS ||
         feet < 0 || feet + currentPlayerHeight() >= H) {
         return false
     }
@@ -2963,6 +3106,7 @@ function saveCurrentRegionState() {
         waterfallStreams: streams,
         nextWaterfallStreamId
     })
+    rememberActiveRegionData()
 }
 
 function restoreRegionState(saved) {
@@ -2990,6 +3134,8 @@ function startNewWorld() {
     worldRegionX = 0
     worldRegionZ = 0
     regionStateCache.clear()
+    generatedRegionCache.clear()
+    currentRegionData = null
     voxelEdits = new Map()
     trackVoxelEdits = false
     worldSeedBase = null
@@ -3013,144 +3159,278 @@ function hideMainMenu() {
         : 'Click the world to capture the mouse.'
 }
 
+function captureRegionGlobals() {
+    return {
+        seed, worldRegionX, worldRegionZ, voxels, heights, waterLevels,
+        structureFootprints, ponds, oceans, mountains, islands, deserts,
+        oceanRifts, surfaceFissures, hillFeatures, plains, voxelEdits,
+        trackVoxelEdits, flowingWater, waterfallStreams, waterfallSourceKeys,
+        nextWaterfallStreamId, dirtyWaterChunks, waterPhysicsAccumulator,
+        decorationBuffersByChunk
+    }
+}
+
+function restoreRegionGlobals(state) {
+    seed = state.seed
+    worldRegionX = state.worldRegionX
+    worldRegionZ = state.worldRegionZ
+    voxels = state.voxels
+    heights = state.heights
+    waterLevels = state.waterLevels
+    structureFootprints = state.structureFootprints
+    ponds = state.ponds
+    oceans = state.oceans
+    mountains = state.mountains
+    islands = state.islands
+    deserts = state.deserts
+    oceanRifts = state.oceanRifts
+    surfaceFissures = state.surfaceFissures
+    hillFeatures = state.hillFeatures
+    plains = state.plains
+    voxelEdits = state.voxelEdits
+    trackVoxelEdits = state.trackVoxelEdits
+    flowingWater = state.flowingWater
+    waterfallStreams = state.waterfallStreams
+    waterfallSourceKeys = state.waterfallSourceKeys
+    nextWaterfallStreamId = state.nextWaterfallStreamId
+    dirtyWaterChunks = state.dirtyWaterChunks
+    waterPhysicsAccumulator = state.waterPhysicsAccumulator
+    decorationBuffersByChunk = state.decorationBuffersByChunk
+}
+
+function rememberActiveRegionData() {
+    if (!currentRegionData) return
+    const state = captureRegionGlobals()
+    Object.assign(currentRegionData, state, {
+        regionX: worldRegionX,
+        regionZ: worldRegionZ
+    })
+    const key = regionCacheKey()
+    generatedRegionCache.delete(key)
+    generatedRegionCache.set(key, currentRegionData)
+}
+
+function trimGeneratedRegionCache(protectedKey = null) {
+    const activeKey = regionCacheKey()
+    while (generatedRegionCache.size > MAX_CACHED_REGION_DATA) {
+        let victim = null
+        let victimDistance = -1
+        for (const key of generatedRegionCache.keys()) {
+            if (key === activeKey || key === protectedKey) continue
+            const [rx, rz] = key.split(',').map(Number)
+            const distance = (rx - worldRegionX) ** 2 + (rz - worldRegionZ) ** 2
+            if (distance > victimDistance) {
+                victimDistance = distance
+                victim = key
+            }
+        }
+        if (victim === null) break
+        generatedRegionCache.delete(victim)
+    }
+}
+
+function generateRegionData(regionX, regionZ) {
+    const key = regionX + ',' + regionZ
+    if (generatedRegionCache.has(key)) {
+        const cached = generatedRegionCache.get(key)
+        generatedRegionCache.delete(key)
+        generatedRegionCache.set(key, cached)
+        return cached
+    }
+
+    const previous = captureRegionGlobals()
+    let generated = null
+    try {
+        worldRegionX = regionX
+        worldRegionZ = regionZ
+        seed = seedForRegion(regionX, regionZ)
+        voxels = new Int8Array(N * N * H)
+        heights = new Int16Array(N * N)
+        waterLevels = new Int8Array(N * N)
+        structureFootprints = []
+        ponds = []
+        oceans = []
+        mountains = []
+        islands = []
+        deserts = []
+        oceanRifts = []
+        surfaceFissures = []
+        hillFeatures = []
+        plains = []
+        voxelEdits = new Map()
+        trackVoxelEdits = false
+        flowingWater = new Map()
+        waterfallStreams = new Map()
+        waterfallSourceKeys = new Set()
+        nextWaterfallStreamId = 1
+        dirtyWaterChunks = new Set()
+        waterPhysicsAccumulator = 0
+        decorationBuffersByChunk = new Map()
+        voxels.fill(EMPTY)
+        heights.fill(0)
+        waterLevels.fill(EMPTY)
+
+        // Preserve the existing island, biome, river, pond, mountain, and vegetation pipeline.
+        createWorldFeatures()
+        createHeightMap()
+        applyOceanRiftsToHeightMap()
+        createOceans()
+        createPonds()
+        createRiverChannels()
+        voxelize()
+        carveSurfaceFissures()
+        carveMountainCaves()
+        addTrees()
+        pruneFloatingArtifacts()
+        pruneFloatingWater()
+        flowWaterDownhill()
+        restoreRegionState(regionStateCache.get(key) || null)
+        trackVoxelEdits = true
+        decorationBuffersByChunk = addGroundDecorations()
+
+        generated = Object.assign(captureRegionGlobals(), {
+            regionX,
+            regionZ,
+            trackVoxelEdits: true
+        })
+        generatedRegionCache.set(key, generated)
+    } finally {
+        restoreRegionGlobals(previous)
+    }
+    trimGeneratedRegionCache(key)
+    return generated
+}
+
+function getRegionData(regionX, regionZ) {
+    return generateRegionData(regionX, regionZ)
+}
+
+function activateRegionData(data) {
+    worldRegionX = data.regionX
+    worldRegionZ = data.regionZ
+    seed = data.seed
+    voxels = data.voxels
+    heights = data.heights
+    waterLevels = data.waterLevels
+    structureFootprints = data.structureFootprints
+    ponds = data.ponds
+    oceans = data.oceans
+    mountains = data.mountains
+    islands = data.islands
+    deserts = data.deserts
+    oceanRifts = data.oceanRifts
+    surfaceFissures = data.surfaceFissures
+    hillFeatures = data.hillFeatures
+    plains = data.plains
+    voxelEdits = data.voxelEdits
+    trackVoxelEdits = true
+    flowingWater = data.flowingWater
+    waterfallStreams = data.waterfallStreams
+    waterfallSourceKeys = data.waterfallSourceKeys
+    nextWaterfallStreamId = data.nextWaterfallStreamId
+    waterPhysicsAccumulator = data.waterPhysicsAccumulator
+    decorationBuffersByChunk = data.decorationBuffersByChunk
+    currentRegionData = data
+}
+
+function shiftLoadedMeshes(regionDeltaX, regionDeltaZ) {
+    const offsetX = -regionDeltaX * N
+    const offsetZ = -regionDeltaZ * N
+    if (!offsetX && !offsetZ) return
+    for (const mesh of meshes) {
+        const wasFrozen = !!mesh.isWorldMatrixFrozen
+        if (wasFrozen) mesh.unfreezeWorldMatrix()
+        mesh.position.x += offsetX
+        mesh.position.z += offsetZ
+        mesh.computeWorldMatrix(true)
+        if (wasFrozen) mesh.freezeWorldMatrix()
+    }
+}
+
 function streamToRegion() {
     if (mainMenuOpen || worldTransitioning) return
-
     let nextRegionX = worldRegionX
     let nextRegionZ = worldRegionZ
     let nextX = playerX
     let nextZ = playerZ
     let changed = false
 
-    // Rebase at the actual sector edge so movement remains continuous in world space.
-    if (playerX < 1) {
+    // Shift the region origin by one full width, keeping movement continuous.
+    if (playerX < 0) {
         nextRegionX--
-        nextX = N - playerX
+        nextX = playerX + N
         changed = true
-    } else if (playerX > N - 1) {
+    } else if (playerX >= N) {
         nextRegionX++
-        nextX = N - playerX
+        nextX = playerX - N
         changed = true
     }
-    if (playerZ < 1) {
+    if (playerZ < 0) {
         nextRegionZ--
-        nextZ = N - playerZ
+        nextZ = playerZ + N
         changed = true
-    } else if (playerZ > N - 1) {
+    } else if (playerZ >= N) {
         nextRegionZ++
-        nextZ = N - playerZ
+        nextZ = playerZ - N
         changed = true
     }
     if (!changed) return
 
-    const savedYaw = yaw
-    const savedPitch = pitch
-    const savedFlight = creativeFlying
+    const oldRegionX = worldRegionX
+    const oldRegionZ = worldRegionZ
     saveCurrentRegionState()
+    const nextData = getRegionData(nextRegionX, nextRegionZ)
 
     worldRegionX = nextRegionX
     worldRegionZ = nextRegionZ
-    pendingRegionSpawn = {
-        x: clamp(nextX, PLAYER_RADIUS + 0.02, N - PLAYER_RADIUS - 0.02),
-        z: clamp(nextZ, PLAYER_RADIUS + 0.02, N - PLAYER_RADIUS - 0.02)
-    }
-    requestedRegionSeed = seedForRegion(worldRegionX, worldRegionZ)
-    worldTransitioning = true
-
-    // Sector edges are open ocean. Swap the deterministic sector in this frame,
-    // then let the nearby chunk queue stream the new view with no overlay.
-    generate()
-    yaw = savedYaw
-    pitch = savedPitch
-    creativeFlying = savedFlight
-    verticalVelocity = 0
+    activateRegionData(nextData)
+    shiftLoadedMeshes(nextRegionX - oldRegionX, nextRegionZ - oldRegionZ)
+    playerX = nextX
+    playerZ = nextZ
     syncCamera()
+    updateChunkLoading(true)
     worldTransitioning = false
 }
 
 function generate() {
-    const cachedRegionState = regionStateCache.get(regionCacheKey()) || null
-    trackVoxelEdits = false
-    voxelEdits = new Map()
-
-    for (const m of meshes) m.dispose()
+    for (const mesh of meshes) mesh.dispose()
     meshes = []
-    structureFootprints = []
     chunkMeshes.clear()
     desiredChunkKeys = new Set()
     pendingChunkQueue = []
-    flowingWater.clear()
-    waterfallStreams.clear()
-    waterfallSourceKeys.clear()
-    nextWaterfallStreamId = 1
-    dirtyWaterChunks.clear()
-    waterPhysicsAccumulator = 0
+    dirtyWaterChunks = new Set()
     chunkLoadStatusActive = true
-    decorationBuffersByChunk = new Map()
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
+    generatedRegionCache.clear()
+    currentRegionData = null
+    worldRegionX = 0
+    worldRegionZ = 0
 
-    seed = Number.isInteger(requestedRegionSeed)
-        ? requestedRegionSeed
-        : Math.floor(Math.random() * 2147483646) + 1
-    requestedRegionSeed = null
-    if (worldSeedBase === null) worldSeedBase = seed
-
-    voxels.fill(EMPTY)
-    waterLevels.fill(EMPTY)
-
-    createWorldFeatures()
-    createHeightMap()
-    applyOceanRiftsToHeightMap()
-    createOceans()
-    createPonds()
-    createRiverChannels()
-    voxelize()
-    carveSurfaceFissures()
-    carveMountainCaves()
-    addTrees()
-    pruneFloatingArtifacts()
-    pruneFloatingWater()
-    flowWaterDownhill()
-
-    // Reconstruct the static sector from its seed, then restore only runtime edits
-    // and active fluid cells from earlier visits.
-    restoreRegionState(cachedRegionState)
-    trackVoxelEdits = false
-    decorationBuffersByChunk = addGroundDecorations()
+    seed = Math.floor(Math.random() * 2147483646) + 1
+    worldSeedBase = seed
+    const initialRegion = getRegionData(0, 0)
+    activateRegionData(initialRegion)
 
     let found = false
-
-    if (pendingRegionSpawn) {
-        // Map borders are open ocean. Enter a newly seeded region at sea level,
-        // preventing a spawn inside terrain or an unloaded chunk.
-        playerX = pendingRegionSpawn.x
-        playerZ = pendingRegionSpawn.z
-        feetY = oceans[0].level + 0.25
-        pendingRegionSpawn = null
-        found = true
-    } else {
-        for (let radius = 0; radius < N / 2 && !found; radius++) {
-            for (let x = Math.max(2, Math.floor(N / 2 - radius));
-                x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
-                for (let z = Math.max(2, Math.floor(N / 2 - radius));
-                    z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
-                    if (heights[ci(x, z)] <= oceans[0].level) continue
-                    const floor = findGround(x + .5, z + .5)
-                    if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
-
-                    if (canOccupy(x + .5, z + .5, floor)) {
-                        playerX = x + .5
-                        playerZ = z + .5
-                        feetY = floor
-                        found = true
-                        break
-                    }
+    for (let radius = 0; radius < N / 2 && !found; radius++) {
+        for (let x = Math.max(2, Math.floor(N / 2 - radius));
+            x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
+            for (let z = Math.max(2, Math.floor(N / 2 - radius));
+                z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
+                if (heights[ci(x, z)] <= oceans[0].level) continue
+                const floor = findGround(x + 0.5, z + 0.5)
+                if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
+                if (canOccupy(x + 0.5, z + 0.5, floor)) {
+                    playerX = x + 0.5
+                    playerZ = z + 0.5
+                    feetY = floor
+                    found = true
+                    break
                 }
             }
         }
     }
-
     if (!found) {
         playerX = N / 2
         playerZ = N / 2
@@ -3161,7 +3441,6 @@ function generate() {
     cameraEyeHeight = EYE_HEIGHT
     horizontalVelocityX = 0
     horizontalVelocityZ = 0
-
     grounded = true
     jumpQueued = false
     creativeFlying = false
@@ -3171,11 +3450,8 @@ function generate() {
     pitch = 0
     syncCamera()
     updateChunkLoading(true)
-
-    status.textContent = 'World generated. Seed: ' + seed + '. Loading nearby chunks (' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ')…'
-    trackVoxelEdits = true
+    status.textContent = 'Infinite world seed: ' + seed + '. Streaming nearby chunks…'
 }
-
 window.addEventListener('keydown', e => {
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
         e.preventDefault()
