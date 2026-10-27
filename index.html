@@ -402,6 +402,7 @@ let currentRegionData = null
 let voxelEdits = new Map()
 let trackVoxelEdits = false
 let flowingWater = new Map()
+let waterMovementInProgress = false
 let settingsOpen = false
 let settingsReturnToMenu = false
 let waterfallStreams = new Map()
@@ -501,7 +502,9 @@ function set(x, y, z, t) {
             voxelEdits.set(cell, t)
             const openedOrFlooded = (previous === EMPTY) !== (t === EMPTY) ||
                 isWaterBlock(previous) !== isWaterBlock(t)
-            if (openedOrFlooded) wakeAdjacentWaterCells(x, y, z)
+            if (openedOrFlooded) {
+                wakeAdjacentWaterCells(x, y, z, waterMovementInProgress ? 1 : 3)
+            }
         }
     }
 }
@@ -1411,29 +1414,33 @@ function markWaterChunkDirty(x, z) {
     }
 }
 
-function wakeAdjacentWaterCells(x, y, z) {
-    const adjacent = [
-        [x + 1, y, z], [x - 1, y, z],
-        [x, y, z + 1], [x, y, z - 1],
-        [x, y + 1, z], [x, y - 1, z]
-    ]
-    for (const [nx, ny, nz] of adjacent) {
-        if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1 ||
-            ny < 1 || ny >= H) continue
-        if (!isWaterBlock(get(nx, ny, nz))) continue
-        const cell = idx(nx, ny, nz)
-        const state = flowingWater.get(cell)
-        if (state) {
-            // Terrain edits can reveal a new route even after the horizontal limit.
-            state.horizontalSteps = 0
-            state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
-            state.falling = false
-        } else {
-            flowingWater.set(cell, {
-                horizontalSteps: 0,
-                horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
-                falling: false
-            })
+function wakeAdjacentWaterCells(x, y, z, radius = 1) {
+    // Geometry edits wake all nearby water across the horizontal detection radius.
+    // Include water one level above/below the changed block, as open routes may
+    // be diagonal in 3D (e.g. mining the floor beside a water block).
+    for (let dx = -radius; dx <= radius; dx++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+            if (Math.abs(dx) + Math.abs(dz) > radius) continue
+            const nx = x + dx, nz = z + dz
+            if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+            for (let dy = -1; dy <= 1; dy++) {
+                const ny = y + dy
+                if (ny < 1 || ny >= H || !isWaterBlock(get(nx, ny, nz))) continue
+                const cell = idx(nx, ny, nz)
+                const state = flowingWater.get(cell)
+                if (state) {
+                    // Terrain edits can reveal a new route even after the horizontal limit.
+                    state.horizontalSteps = 0
+                    state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
+                    state.falling = false
+                } else {
+                    flowingWater.set(cell, {
+                        horizontalSteps: 0,
+                        horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+                        falling: false
+                    })
+                }
+            }
         }
     }
 }
@@ -1550,8 +1557,14 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
     if (get(nx, ny, nz) !== EMPTY) return false
     const oldCell = idx(x, y, z)
     flowingWater.delete(oldCell)
-    set(x, y, z, EMPTY)
-    set(nx, ny, nz, type)
+    const previousMutationState = waterMovementInProgress
+    waterMovementInProgress = true
+    try {
+        set(x, y, z, EMPTY)
+        set(nx, ny, nz, type)
+    } finally {
+        waterMovementInProgress = previousMutationState
+    }
 
     const movedDown = ny < y
     const movedHorizontally = nx !== x || nz !== z
@@ -1570,7 +1583,13 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
 function consumeIntoExistingWater(x, y, z) {
     const cell = idx(x, y, z)
     flowingWater.delete(cell)
-    set(x, y, z, EMPTY)
+    const previousMutationState = waterMovementInProgress
+    waterMovementInProgress = true
+    try {
+        set(x, y, z, EMPTY)
+    } finally {
+        waterMovementInProgress = previousMutationState
+    }
     markWaterChunkDirty(x, z)
 }
 
