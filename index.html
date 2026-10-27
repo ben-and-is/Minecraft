@@ -509,25 +509,33 @@ function smoothstep(a, b, value) {
     return t * t * (3 - 2 * t)
 }
 function worldBiomeAt(gx, gz) {
-    const biomeNoise = globalFbm(gx, gz, 0.00235, 901)
-    const moisture = globalFbm(gx, gz, 0.00305, 1277)
-    const dryNoise = globalFbm(gx, gz, 0.00145, 1901)
-    const desert = dryNoise < 0.345 && moisture < 0.47
-    const pine = !desert && biomeNoise > 0.565 && moisture > 0.37
-    const plains = !desert && !pine && biomeNoise < 0.43 && moisture > 0.29
+    // Biome fields use a regional scale that changes visibly over a few chunks,
+    // so each streamed area can contain distinct plains, forests, and deserts.
+    const biomeNoise = globalFbm(gx, gz, 0.0065, 901)
+    const moisture = globalFbm(gx, gz, 0.0075, 1277)
+    const dryNoise = globalFbm(gx, gz, 0.0058, 1901)
+    const desert = dryNoise < 0.42 && moisture < 0.52
+    const pine = !desert && biomeNoise > 0.55 && moisture > 0.43
+    const plains = !desert && !pine && biomeNoise < 0.46 && moisture > 0.30
     return { desert, pine, plains, forest: !desert && !pine && !plains, moisture, biomeNoise }
 }
-function infiniteTerrainHeight(gx, gz) {
-    const seaLevel = 12, continental = globalFbm(gx, gz, 0.0015, 101)
-    const land = smoothstep(0.435, 0.585, continental)
-    const regional = globalFbm(gx, gz, 0.0055, 173)
-    const rolling = globalFbm(gx, gz, 0.019, 251)
-    const mountainField = globalFbm(gx, gz, 0.0029, 347)
-    const mountain = smoothstep(0.57, 0.765, mountainField)
-    const ridgeNoise = 1 - Math.abs(globalFbm(gx, gz, 0.0071, 419) * 2 - 1)
-    const biome = worldBiomeAt(gx, gz)
-    if (land < 0.16) return clamp(2 + Math.floor(continental * 13 + regional * 3), 1, seaLevel - 1)
-    let height = seaLevel + 2 + land * (3 + regional * 12) + (rolling - 0.5) * 5 + mountain * (8 + ridgeNoise * 28)
+function infiniteTerrainHeight(gx, gz, biome = worldBiomeAt(gx, gz)) {
+    const seaLevel = 12
+    // Blend broad landforms with medium-scale noise. The previous single, very
+    // low-frequency mask often evaluated as all-land for an entire spawn window.
+    const continental =
+        globalFbm(gx, gz, 0.0045, 101) * 0.50 +
+        globalFbm(gx, gz, 0.0105, 103) * 0.30 +
+        globalFbm(gx, gz, 0.024, 107) * 0.20
+    const land = smoothstep(0.43, 0.57, continental)
+    const regional = globalFbm(gx, gz, 0.0075, 173)
+    const rolling = globalFbm(gx, gz, 0.022, 251)
+    const mountainField = globalFbm(gx, gz, 0.007, 347)
+    const mountain = smoothstep(0.49, 0.65, mountainField)
+    const ridgeNoise = 1 - Math.abs(globalFbm(gx, gz, 0.014, 419) * 2 - 1)
+    if (land < 0.18) return clamp(2 + Math.floor(continental * 13 + regional * 3), 1, seaLevel - 1)
+    let height = seaLevel + 2 + land * (3 + regional * 12) + (rolling - 0.5) * 5 +
+        mountain * (12 + ridgeNoise * 32)
     if (biome.desert) height = seaLevel + 2 + regional * 4 + rolling * 2
     return clamp(Math.round(height), seaLevel - 2, H - 9)
 }
@@ -535,15 +543,16 @@ function globalLakeForCell(cellX, cellZ) {
     const key = cellX + "," + cellZ
     if (lakeFeatureCache.has(key)) return lakeFeatureCache.get(key)
     let lake = null
-    if (globalHash(cellX, cellZ, 7001) < 0.13) {
+    if (globalHash(cellX, cellZ, 7001) < 0.30) {
         const gx = cellX * 192 + 20 + globalHash(cellX, cellZ, 7003) * 152
         const gz = cellZ * 192 + 20 + globalHash(cellX, cellZ, 7007) * 152
-        const terrain = infiniteTerrainHeight(gx, gz), biome = worldBiomeAt(gx, gz)
-        const mountainNoise = globalFbm(gx, gz, 0.0029, 347)
+        const biome = worldBiomeAt(gx, gz)
+        const terrain = infiniteTerrainHeight(gx, gz, biome)
+        const mountainNoise = globalFbm(gx, gz, 0.007, 347)
         const rx = 6 + globalHash(cellX, cellZ, 7011) * 7
         const rz = 6 + globalHash(cellX, cellZ, 7013) * 7
         const level = 15 + Math.floor(globalHash(cellX, cellZ, 7019) * 9)
-        if (terrain > level + 5 && !biome.desert && mountainNoise < 0.72) {
+        if (terrain > level + 1 && !biome.desert && mountainNoise < 0.92) {
             lake = { key, name: "Hidden Lake", kind: "large", worldX: gx, worldZ: gz, rx, rz, warp: 1.8, level, connected: false }
         }
     }
@@ -581,6 +590,63 @@ function collectInfiniteLakes(minWorldX, maxWorldX, minWorldZ, maxWorldZ) {
         result.push({ ...lake, x: lake.worldX - worldOriginX, z: lake.worldZ - worldOriginZ })
     }
     return result
+}
+
+function chooseWorldOrigin() {
+    const sampleCount = Math.ceil(N / 32) ** 2
+    let best = null
+    // Prefer a spawn window containing coast/ocean, a dry biome, high terrain,
+    // and at least one inland lake instead of letting a bad low-frequency sample
+    // make the entire starting world look alike.
+    for (let attempt = 0; attempt < 128; attempt++) {
+        const originX = (Math.floor(globalHash(attempt + 1, seed % 100003, 9901) * 1025) - 512) * CS
+        const originZ = (Math.floor(globalHash(attempt + 1, seed % 200009, 9911) * 1025) - 512) * CS
+        let oceanCount = 0, desertCount = 0, mountainCount = 0, pineCount = 0
+
+        for (let x = 8; x < N; x += 32) {
+            for (let z = 8; z < N; z += 32) {
+                const gx = originX + x, gz = originZ + z
+                const biome = worldBiomeAt(gx, gz)
+                const height = infiniteTerrainHeight(gx, gz, biome)
+                if (height < 12) oceanCount++
+                if (biome.desert) desertCount++
+                if (height >= 12 && globalFbm(gx, gz, 0.007, 347) > 0.56) mountainCount++
+                if (biome.pine) pineCount++
+            }
+        }
+
+        let lakeCount = 0
+        const minCellX = Math.floor((originX - 32) / 192)
+        const maxCellX = Math.floor((originX + N + 32) / 192)
+        const minCellZ = Math.floor((originZ - 32) / 192)
+        const maxCellZ = Math.floor((originZ + N + 32) / 192)
+        for (let cx = minCellX; cx <= maxCellX; cx++) {
+            for (let cz = minCellZ; cz <= maxCellZ; cz++) {
+                const lake = globalLakeForCell(cx, cz)
+                if (lake && lake.worldX > originX + 8 && lake.worldX < originX + N - 8 &&
+                    lake.worldZ > originZ + 8 && lake.worldZ < originZ + N - 8) lakeCount++
+            }
+        }
+
+        const oceanRatio = oceanCount / sampleCount
+        const desertRatio = desertCount / sampleCount
+        const mountainRatio = mountainCount / sampleCount
+        const pineRatio = pineCount / sampleCount
+        const score = Math.abs(oceanRatio - 0.34) * 1.8 +
+            Math.max(0, 0.07 - desertRatio) * 3 +
+            Math.max(0, desertRatio - 0.36) * 1.2 +
+            Math.max(0, 0.09 - mountainRatio) * 3 +
+            Math.max(0, 0.03 - pineRatio) +
+            (lakeCount === 0 ? 0.09 : 0)
+
+        if (!best || score < best.score) best = { x: originX, z: originZ, score }
+        if (oceanRatio >= 0.16 && oceanRatio <= 0.58 &&
+            desertRatio >= 0.07 && desertRatio <= 0.34 &&
+            mountainRatio >= 0.09 && pineRatio >= 0.03 && lakeCount > 0) {
+            return { x: originX, z: originZ }
+        }
+    }
+    return best ? { x: best.x, z: best.z } : { x: -Math.floor(N / 2 / CS) * CS, z: -Math.floor(N / 2 / CS) * CS }
 }
 function generateInfiniteChunkTerrain(cx, cz) {
     const x0 = cx * CS, z0 = cz * CS, seaLevel = 12
@@ -3038,6 +3104,8 @@ function generate() {
     seed = Math.floor(Math.random() * 2147483646) + 1
     worldOriginX = -Math.floor(N / 2 / CS) * CS; worldOriginZ = -Math.floor(N / 2 / CS) * CS
     worldEditsByChunk.clear(); lakeFeatureCache.clear(); seededLakeKeys.clear(); ponds = []
+    const selectedOrigin = chooseWorldOrigin()
+    worldOriginX = selectedOrigin.x; worldOriginZ = selectedOrigin.z
     voxels.fill(EMPTY); heights.fill(0); waterLevels.fill(EMPTY)
     for (let cz = 0; cz < CHUNKS_PER_AXIS; cz++) for (let cx = 0; cx < CHUNKS_PER_AXIS; cx++) generateInfiniteChunkTerrain(cx, cz)
     for (let cz = 0; cz < CHUNKS_PER_AXIS; cz++) for (let cx = 0; cx < CHUNKS_PER_AXIS; cx++) generateInfiniteChunkFeatures(cx, cz)
