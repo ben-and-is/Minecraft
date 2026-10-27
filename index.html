@@ -1804,6 +1804,9 @@ function carveMountainCaves() {
 function pruneFloatingArtifacts() {
     for (let x = 1; x < N - 1; x++) {
         for (let z = 1; z < N - 1; z++) {
+            // Preserve the watchtower's exact supplied template, including its
+            // intentionally unsupported top roof block and upper roof details.
+            if (isInsideStructureFootprint(x, z)) continue
             const ground = heights[ci(x,z)]
             for (let y = Math.max(1, ground + 1); y < H - 1; y++) {
                 const type = get(x,y,z)
@@ -2035,16 +2038,18 @@ function addTrees() {
         const baseY = groundY + 1
         if (baseY + WATCHTOWER_STRUCTURE.size[1] - 1 >= H) return null
 
-        // Preflight before changing terrain. Any non-terrain block in the tower's
-        // vertical volume invalidates this site, rather than being overwritten.
-        for (const block of WATCHTOWER_STRUCTURE.blocks) {
-            const wx = best.x + block.pos[0]
-            const wy = baseY + block.pos[1]
-            const wz = best.z + block.pos[2]
-            if (wx < 1 || wx >= N - 1 || wz < 1 || wz >= N - 1 ||
-                wy < 0 || wy >= H) return null
-            const oldHeight = heights[ci(wx, wz)]
-            if (wy > oldHeight && get(wx, wy, wz) !== EMPTY) return null
+        // Preflight the entire 7x18x7 volume, including the template's empty
+        // cells, before changing terrain. Refuse any site with water, trees, or
+        // another feature suspended above the existing ground.
+        for (let dx = 0; dx < WATCHTOWER_STRUCTURE.size[0]; dx++) {
+            for (let dz = 0; dz < WATCHTOWER_STRUCTURE.size[2]; dz++) {
+                const wx = best.x + dx, wz = best.z + dz
+                const oldHeight = heights[ci(wx, wz)]
+                for (let wy = Math.max(baseY, oldHeight + 1);
+                    wy < baseY + WATCHTOWER_STRUCTURE.size[1]; wy++) {
+                    if (get(wx, wy, wz) !== EMPTY) return null
+                }
+            }
         }
 
         // Level the small footprint before placing blocks: cut the high columns,
