@@ -160,32 +160,13 @@
         line-height: 1.8;
     }
 
-    #regionTransition {
-        position: fixed;
-        inset: 0;
-        z-index: 900;
-        display: none;
-        align-items: center;
-        justify-content: center;
-        background: #07111b;
-        color: white;
-        font: 700 16px/1.5 system-ui, sans-serif;
-        letter-spacing: .04em;
-        opacity: 1;
-        transition: opacity .35s ease;
-        pointer-events: all;
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-        #regionTransition { transition: none; }
-    }
 </style>
 </head>
 <body>
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, wide waterfalls, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk view radius, 400-chunk cap.</p>
+        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, waterfalls, high and low ponds, deep rifts, varied islands and rare flat deserts. 5-chunk streamed view radius.</p>
         <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -199,10 +180,9 @@
                 <button id="playBtn" type="button">Continue Exploring</button>
                 <button id="newWorldBtn" class="secondary" type="button">New World</button>
             </div>
-            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Water moves every 400 ms and drains finite pond water into bounded flows.</div>
+            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Water moves every 400 ms, falls into open space, and spreads across eligible ground without draining the source.</div>
         </div>
     </div>
-    <div id="regionTransition" role="status" aria-live="polite">Entering a new region…</div>
 
 <script>
 (() => {
@@ -223,7 +203,7 @@ const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5
 const MCOUNT = 14
 const MAX_CHUNK_BUILDS_PER_FRAME = 3
 const MAX_LOADED_CHUNKS = 400
-const CHUNK_RENDER_RADIUS = 4
+const CHUNK_RENDER_RADIUS = 5
 const CHUNKS_PER_AXIS = Math.ceil(N / CS)
 
 const WATCHTOWER_ROWS = [
@@ -330,6 +310,9 @@ let chunkMeshes = new Map()
 let desiredChunkKeys = new Set()
 let pendingChunkQueue = []
 let structureFootprints = []
+let regionStateCache = new Map()
+let voxelEdits = new Map()
+let trackVoxelEdits = false
 let flowingWater = new Map()
 let waterfallStreams = new Map()
 let waterfallSourceKeys = new Set()
@@ -420,7 +403,9 @@ function get(x, y, z) {
 
 function set(x, y, z, t) {
     if (x >= 0 && x < N && z >= 0 && z < N && y >= 0 && y < H) {
-        voxels[idx(x, y, z)] = t
+        const cell = idx(x, y, z)
+        voxels[cell] = t
+        if (trackVoxelEdits) voxelEdits.set(cell, t)
     }
 }
 
@@ -762,9 +747,20 @@ function plainsInfluence(x, z) {
 }
 
 function isPineForestAt(x, z) {
-    const biomeNoise = noise(x * 0.016 + seed * 0.011 + 73, z * 0.016 - seed * 0.017 + 29)
-    return biomeNoise > 0.78 && plainsInfluence(x, z) < 0.60 && desertInfluenceAt(x, z) < 0.32
+    const broadForest = noise(
+        x * 0.0058 + seed * 0.0021 + 73,
+        z * 0.0058 - seed * 0.0027 + 29
+    )
+    const edgeDetail = noise(
+        x * 0.015 + seed * 0.011 + 17,
+        z * 0.015 - seed * 0.017 + 43
+    )
+    const biomeScore = broadForest * 0.86 + edgeDetail * 0.14
+    return biomeScore > 0.465 &&
+        plainsInfluence(x, z) < 0.68 &&
+        desertInfluenceAt(x, z) < 0.34
 }
+
 function irregularDistance(x, z, feature) {
     const warp = feature.warp || 0
     const warpX =
@@ -1009,9 +1005,19 @@ function applyOceanRiftsToHeightMap() {
 }
 
 function createHeightMap() {
+    const seaLevel = oceans.length ? oceans[0].level : 12
+    const edgeBlendWidth = 22
     for (let x = 0; x < N; x++) {
         for (let z = 0; z < N; z++) {
-            heights[ci(x, z)] = terrainHeight(x, z)
+            let h = terrainHeight(x, z)
+            const edgeDistance = Math.min(x, z, N - 1 - x, N - 1 - z)
+            if (edgeDistance < edgeBlendWidth) {
+                const oceanFloorLimit = 2 + Math.floor(
+                    (seaLevel - 4) * edgeDistance / edgeBlendWidth
+                )
+                h = Math.min(h, oceanFloorLimit)
+            }
+            heights[ci(x, z)] = h
         }
     }
 }
@@ -1111,6 +1117,24 @@ function createPonds() {
                     const smooth = t * t * (3 - 2 * t)
                     const target = Math.round(pond.level + (originalHeight - pond.level) * smooth)
                     heights[col] = Math.max(seaLevel + 1, Math.min(originalHeight, target))
+                }
+            }
+        }
+
+        // Close gaps in irregular lake banks with a continuous raised shoreline.
+        if (!pond.disabled && pond.level > seaLevel + 1) {
+            const bankLevel = Math.min(H - 7, Math.round(pond.level + 2))
+            const bankMargin = (pond.warp || 0) + 4
+            const bankX0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.55 - bankMargin))
+            const bankX1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.55 + bankMargin))
+            const bankZ0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.55 - bankMargin))
+            const bankZ1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.55 + bankMargin))
+            for (let x = bankX0; x <= bankX1; x++) {
+                for (let z = bankZ0; z <= bankZ1; z++) {
+                    const edge = irregularDistance(x, z, pond)
+                    if (edge <= 1.0 || edge > 1.48) continue
+                    const col = ci(x, z)
+                    heights[col] = Math.max(heights[col], bankLevel)
                 }
             }
         }
@@ -1257,7 +1281,7 @@ function voxelize() {
 
 const WATER_STEP_INTERVAL = 0.4
 const WATER_CELLS_PER_STEP = 4096
-const WATER_MAX_HORIZONTAL_STEPS = 3
+const WATER_MAX_HORIZONTAL_STEPS = 7
 
 function markWaterChunkDirty(x, z) {
     const cx = Math.floor(x / CS)
@@ -1292,46 +1316,17 @@ function pruneFloatingWater() {
     return removed
 }
 
-function addFlowWater(x, y, z, horizontalSteps = 0) {
+function addFlowWater(x, y, z, horizontalSteps = 0, extraState = {}) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
 
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { horizontalSteps })
+    flowingWater.set(idx(x, y, z), { horizontalSteps, ...extraState })
     markWaterChunkDirty(x, z)
     return true
 }
 
-function takePondSurfaceWater(pond, sourceLevel, nearX, nearZ, excludedSourceKey = -1) {
-    const margin = (pond.warp || 0) + 2
-    const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.2 - margin))
-    const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.2 + margin))
-    const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.2 - margin))
-    const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.2 + margin))
-    let best = null
-    let bestScore = Infinity
 
-    for (let x = x0; x <= x1; x++) {
-        for (let z = z0; z <= z1; z++) {
-            if (irregularDistance(x, z, pond) > 1.02) continue
-            const cell = idx(x, sourceLevel, z)
-            if (cell === excludedSourceKey || waterfallSourceKeys.has(cell)) continue
-            if (flowingWater.has(cell) || !isWaterBlock(get(x, sourceLevel, z))) continue
-
-            const score = Math.hypot(x - nearX, z - nearZ) +
-                rand(x + 5903, z + 5923) * 0.025
-            if (score < bestScore) {
-                bestScore = score
-                best = { x, y: sourceLevel, z }
-            }
-        }
-    }
-
-    if (!best) return false
-    set(best.x, best.y, best.z, EMPTY)
-    markWaterChunkDirty(best.x, best.z)
-    return true
-}
 
 function flowWaterDownhill() {
     const seaLevel = oceans.length ? oceans[0].level : 12
@@ -1388,10 +1383,7 @@ function flowWaterDownhill() {
             if (get(outlet.x, sourceLevel - 1, outlet.z) !== EMPTY) return false
             if (selected.some(other => Math.hypot(other.sourceX - outlet.sourceX, other.sourceZ - outlet.sourceZ) < minSpacing)) return false
 
-            // Transfer an actual pond-surface voxel into the lip, keeping the lip's
-            // visible source block in place so the waterfall visibly touches the pond.
-            if (!takePondSurfaceWater(pond, sourceLevel, outlet.sourceX, outlet.sourceZ, sourceKey)) return false
-
+            // Keep the pond source block intact; the stream is fed without draining the lake.
             const id = nextWaterfallStreamId++
             set(outlet.x, sourceLevel, outlet.z, FRESH_WATER)
             flowingWater.set(idx(outlet.x, sourceLevel, outlet.z), { horizontalSteps: 0, waterfallId: id })
@@ -1432,56 +1424,50 @@ function flowWaterDownhill() {
 
 function updateWaterfallStreams() {
     for (const stream of Array.from(waterfallStreams.values())) {
-        const hasFuel = !stream.drying &&
-            takePondSurfaceWater(stream.pond, stream.sourceLevel, stream.sourceX, stream.sourceZ, stream.sourceKey)
+        const sourceAlive = isWaterBlock(get(stream.sourceX, stream.sourceLevel, stream.sourceZ))
+        const topAlive = isWaterBlock(get(stream.x, stream.topY, stream.z))
+
+        if (!sourceAlive || !topAlive) {
+            // If a source is removed, clean only cells belonging to this stream.
+            for (let y = stream.bottomY; y <= stream.topY; y++) {
+                const cell = idx(stream.x, y, stream.z)
+                const state = flowingWater.get(cell)
+                if (state && state.waterfallId === stream.id) {
+                    set(stream.x, y, stream.z, EMPTY)
+                    flowingWater.delete(cell)
+                    markWaterChunkDirty(stream.x, stream.z)
+                }
+            }
+            waterfallSourceKeys.delete(stream.sourceKey)
+            waterfallStreams.delete(stream.id)
+            continue
+        }
+
         const belowY = stream.bottomY - 1
         const below = belowY >= 0 ? get(stream.x, belowY, stream.z) : STONE
 
-        if (hasFuel && belowY > 0 && below === EMPTY) {
-            // Consume one surface block and extend the continuous waterfall by one voxel.
+        if (belowY > 0 && below === EMPTY) {
+            // Extend downward without consuming the pond or any water above it.
             set(stream.x, belowY, stream.z, FRESH_WATER)
-            flowingWater.set(idx(stream.x, belowY, stream.z), { horizontalSteps: 0, waterfallId: stream.id })
+            flowingWater.set(idx(stream.x, belowY, stream.z), {
+                horizontalSteps: 0,
+                waterfallId: stream.id
+            })
             stream.bottomY = belowY
             markWaterChunkDirty(stream.x, stream.z)
             continue
         }
 
-        if (hasFuel && isWaterBlock(below)) {
-            // A column that reaches a pond keeps flowing into it while surface water remains.
-            continue
-        }
+        if (isWaterBlock(below)) continue
 
-        if (hasFuel && isSolid(stream.x, belowY, stream.z)) {
-            // If a waterfall reaches solid ground instead of a pond, it spills in all
-            // horizontal directions. Each outgoing branch has the normal three-step limit.
-            for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        if (isSolid(stream.x, belowY, stream.z)) {
+            // When the fall reaches ground, spill in every eligible cardinal direction.
+            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
                 const nx = stream.x + dx, nz = stream.z + dz
-                if (get(nx, stream.bottomY, nz) === EMPTY) addFlowWater(nx, stream.bottomY, nz, 1)
+                if (get(nx, stream.bottomY, nz) === EMPTY) {
+                    addFlowWater(nx, stream.bottomY, nz, 1)
+                }
             }
-            continue
-        }
-
-        // No unreserved source water remains: consume the lip and retract the fall from
-        // its bottom upward so it stays attached to its source until the final movement.
-        // Keep the top attached to the pond while the finite column retracts from below.
-        // The lip itself is consumed only after the last waterfall voxel is gone.
-        stream.drying = true
-
-        const lowestCell = idx(stream.x, stream.bottomY, stream.z)
-        if (isWaterBlock(get(stream.x, stream.bottomY, stream.z))) {
-            set(stream.x, stream.bottomY, stream.z, EMPTY)
-            markWaterChunkDirty(stream.x, stream.z)
-        }
-        flowingWater.delete(lowestCell)
-        stream.bottomY++
-
-        if (stream.bottomY > stream.topY) {
-            if (isWaterBlock(get(stream.sourceX, stream.sourceLevel, stream.sourceZ))) {
-                set(stream.sourceX, stream.sourceLevel, stream.sourceZ, EMPTY)
-                markWaterChunkDirty(stream.sourceX, stream.sourceZ)
-            }
-            waterfallSourceKeys.delete(stream.sourceKey)
-            waterfallStreams.delete(stream.id)
         }
     }
 }
@@ -1511,45 +1497,37 @@ function updateWaterPhysics(dt) {
 
         const below = y > 0 ? get(x, y - 1, z) : STONE
 
-        // Every non-waterfall parcel moves downward one voxel per 400 ms.
+        // Downward movement has priority and leaves the upper water block in place.
         if (y > 1 && below === EMPTY) {
-            addFlowWater(x, y - 1, z, state.horizontalSteps)
-            set(x, y, z, EMPTY)
-            markWaterChunkDirty(x, z)
-            flowingWater.delete(cell)
+            addFlowWater(x, y - 1, z, state.horizontalSteps, { falling: true })
+            state.falling = true
             continue
         }
 
+        // A falling cell connected to water below is stable and no longer needs processing.
         if (isWaterBlock(below)) {
-            set(x, y, z, EMPTY)
-            markWaterChunkDirty(x, z)
             flowingWater.delete(cell)
             continue
         }
 
         if (isSolid(x, y - 1, z)) {
             if (state.horizontalSteps >= WATER_MAX_HORIZONTAL_STEPS) {
-                set(x, y, z, EMPTY)
-                markWaterChunkDirty(x, z)
                 flowingWater.delete(cell)
                 continue
             }
 
-            for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+            // Try every eligible direction; only occupied destinations are skipped.
+            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
                 const nx = x + dx, nz = z + dz
                 if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
                 if (get(nx, y, nz) !== EMPTY) continue
                 addFlowWater(nx, y, nz, state.horizontalSteps + 1)
             }
-
-            set(x, y, z, EMPTY)
-            markWaterChunkDirty(x, z)
             flowingWater.delete(cell)
             continue
         }
 
-        set(x, y, z, EMPTY)
-        markWaterChunkDirty(x, z)
+        // Stop simulating at an ineligible edge, but retain the actual water block.
         flowingWater.delete(cell)
     }
 }
@@ -2438,7 +2416,13 @@ function buildChunk(cx, cz) {
                 for (const face of faces) {
                     const neighborX = x + face.d[0]
                     const neighborZ = z + face.d[2]
-                    let neighbor = get(neighborX, y + face.d[1], neighborZ)
+                    const neighborY = y + face.d[1]
+                    const outsideSector = neighborX < 0 || neighborX >= N ||
+                        neighborZ < 0 || neighborZ >= N
+                    const neighbor = outsideSector && neighborY >= 0 &&
+                        neighborY <= (oceans[0] ? oceans[0].level : 12)
+                        ? WATER
+                        : get(neighborX, neighborY, neighborZ)
                     if (isWaterBlock(type)) {
                         if (neighbor !== EMPTY) continue
                     } else if (neighbor !== EMPTY && !isWaterBlock(neighbor)) {
@@ -2946,9 +2930,60 @@ function seedForRegion(regionX, regionZ) {
     return value % 2147483646 + 1
 }
 
+function regionCacheKey(regionX = worldRegionX, regionZ = worldRegionZ) {
+    return regionX + "," + regionZ
+}
+
+function saveCurrentRegionState() {
+    const streams = Array.from(waterfallStreams.values()).map(stream => ({
+        id: stream.id,
+        x: stream.x,
+        z: stream.z,
+        topY: stream.topY,
+        bottomY: stream.bottomY,
+        sourceX: stream.sourceX,
+        sourceZ: stream.sourceZ,
+        sourceLevel: stream.sourceLevel,
+        sourceKey: stream.sourceKey,
+        pondIndex: ponds.indexOf(stream.pond),
+        drying: !!stream.drying
+    }))
+    regionStateCache.set(regionCacheKey(), {
+        edits: Array.from(voxelEdits.entries()),
+        flowingWater: Array.from(flowingWater.entries()).map(([cell, state]) => [cell, { ...state }]),
+        waterfallSourceKeys: Array.from(waterfallSourceKeys),
+        waterfallStreams: streams,
+        nextWaterfallStreamId
+    })
+}
+
+function restoreRegionState(saved) {
+    if (!saved) return
+
+    voxelEdits = new Map(saved.edits || [])
+    for (const [cell, type] of voxelEdits) {
+        if (cell >= 0 && cell < voxels.length) voxels[cell] = type
+    }
+
+    flowingWater = new Map((saved.flowingWater || []).map(([cell, state]) => [cell, { ...state }]))
+    waterfallSourceKeys = new Set(saved.waterfallSourceKeys || [])
+    waterfallStreams = new Map()
+    for (const savedStream of (saved.waterfallStreams || [])) {
+        const pond = ponds[savedStream.pondIndex]
+        if (!pond) continue
+        const stream = { ...savedStream, pond }
+        delete stream.pondIndex
+        waterfallStreams.set(stream.id, stream)
+    }
+    nextWaterfallStreamId = saved.nextWaterfallStreamId || 1
+}
+
 function startNewWorld() {
     worldRegionX = 0
     worldRegionZ = 0
+    regionStateCache.clear()
+    voxelEdits = new Map()
+    trackVoxelEdits = false
     worldSeedBase = null
     requestedRegionSeed = null
     pendingRegionSpawn = null
@@ -2973,58 +3008,63 @@ function hideMainMenu() {
 function streamToRegion() {
     if (mainMenuOpen || worldTransitioning) return
 
-    let nextX = playerX, nextZ = playerZ, changed = false
-    if (playerX < 5) {
-        worldRegionX--
-        nextX = N - 6
+    let nextRegionX = worldRegionX
+    let nextRegionZ = worldRegionZ
+    let nextX = playerX
+    let nextZ = playerZ
+    let changed = false
+
+    // Rebase at the actual sector edge so movement remains continuous in world space.
+    if (playerX < 1) {
+        nextRegionX--
+        nextX = N - playerX
         changed = true
-    } else if (playerX > N - 5) {
-        worldRegionX++
-        nextX = 5
+    } else if (playerX > N - 1) {
+        nextRegionX++
+        nextX = N - playerX
         changed = true
     }
-    if (playerZ < 5) {
-        worldRegionZ--
-        nextZ = N - 6
+    if (playerZ < 1) {
+        nextRegionZ--
+        nextZ = N - playerZ
         changed = true
-    } else if (playerZ > N - 5) {
-        worldRegionZ++
-        nextZ = 5
+    } else if (playerZ > N - 1) {
+        nextRegionZ++
+        nextZ = N - playerZ
         changed = true
     }
     if (!changed) return
 
-    const savedYaw = yaw, savedPitch = pitch, savedFlight = creativeFlying
-    pendingRegionSpawn = { x: nextX, z: nextZ }
+    const savedYaw = yaw
+    const savedPitch = pitch
+    const savedFlight = creativeFlying
+    saveCurrentRegionState()
+
+    worldRegionX = nextRegionX
+    worldRegionZ = nextRegionZ
+    pendingRegionSpawn = {
+        x: clamp(nextX, PLAYER_RADIUS + 0.02, N - PLAYER_RADIUS - 0.02),
+        z: clamp(nextZ, PLAYER_RADIUS + 0.02, N - PLAYER_RADIUS - 0.02)
+    }
     requestedRegionSeed = seedForRegion(worldRegionX, worldRegionZ)
     worldTransitioning = true
 
-    const transition = document.getElementById('regionTransition')
-    transition.textContent = 'Entering region ' + worldRegionX + ', ' + worldRegionZ + '…'
-    transition.style.display = 'flex'
-    transition.style.opacity = '1'
-
-    requestAnimationFrame(() => {
-        generate()
-        yaw = savedYaw
-        pitch = savedPitch
-        creativeFlying = savedFlight
-        verticalVelocity = 0
-        syncCamera()
-        status.textContent = 'Region ' + worldRegionX + ', ' + worldRegionZ + ' · Seed ' + seed
-
-        window.setTimeout(() => {
-            transition.style.opacity = '0'
-            window.setTimeout(() => {
-                transition.style.display = 'none'
-                transition.style.opacity = '1'
-                worldTransitioning = false
-            }, 360)
-        }, 160)
-    })
+    // Sector edges are open ocean. Swap the deterministic sector in this frame,
+    // then let the nearby chunk queue stream the new view with no overlay.
+    generate()
+    yaw = savedYaw
+    pitch = savedPitch
+    creativeFlying = savedFlight
+    verticalVelocity = 0
+    syncCamera()
+    worldTransitioning = false
 }
 
 function generate() {
+    const cachedRegionState = regionStateCache.get(regionCacheKey()) || null
+    trackVoxelEdits = false
+    voxelEdits = new Map()
+
     for (const m of meshes) m.dispose()
     meshes = []
     structureFootprints = []
@@ -3065,6 +3105,10 @@ function generate() {
     pruneFloatingWater()
     flowWaterDownhill()
 
+    // Reconstruct the static sector from its seed, then restore only runtime edits
+    // and active fluid cells from earlier visits.
+    restoreRegionState(cachedRegionState)
+    trackVoxelEdits = false
     decorationBuffersByChunk = addGroundDecorations()
 
     let found = false
@@ -3121,6 +3165,7 @@ function generate() {
     updateChunkLoading(true)
 
     status.textContent = 'World generated. Seed: ' + seed + '. Loading nearby chunks (' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ')…'
+    trackVoxelEdits = true
 }
 
 window.addEventListener('keydown', e => {
