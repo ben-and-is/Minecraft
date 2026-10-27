@@ -792,6 +792,14 @@ function shiftWorldWindow(dx, dz) {
     }
     decorationBuffersByChunk = shiftedDecorations
     worldOriginX += shiftX; worldOriginZ += shiftZ; playerX -= shiftX; playerZ -= shiftZ
+    if (autoStep) {
+        autoStep.startX -= shiftX
+        autoStep.targetX -= shiftX
+        autoStep.startZ -= shiftZ
+        autoStep.targetZ -= shiftZ
+    }
+    // Keep the camera in the same rebased coordinate frame as the player and meshes.
+    syncCamera()
     lastChunkCenterX = -1; lastChunkCenterZ = -1; pendingChunkQueue = []; desiredChunkKeys = new Set()
 
     const newChunkKeys = new Set(), wasTracking = trackVoxelEdits
