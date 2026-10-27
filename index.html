@@ -6,14 +6,6 @@
 <title>Voxel World</title>
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
 <style>
-    @font-face {
-        font-family: "Minecraft Seven";
-        src: url("https://www.minecraft.net/etc.clientlibs/minecraftnet/clientlibs/clientlib-site/resources/fonts/Minecraft-Seven_v2.woff2") format("woff2");
-        font-style: normal;
-        font-weight: 400;
-        font-display: swap;
-    }
-
     * {
         box-sizing: border-box;
     }
@@ -27,8 +19,43 @@
 
     body {
         overflow: hidden;
-        font-family: "Minecraft Seven", "Mojangles", monospace;
+        font-family: Arial, Helvetica, sans-serif;
         background: #87ceeb;
+    }
+
+    .ui {
+        font-family: var(--game-ui-font, Arial, Helvetica, sans-serif);
+    }
+
+    .menu-screen,
+    .menu-screen *,
+    #settingsBtn,
+    #settingsMenuBtn {
+        font-family: Arial, Helvetica, sans-serif !important;
+    }
+
+    .settings-screen select {
+        display: block;
+        width: 100%;
+        margin-top: 10px;
+        padding: 12px;
+        border: 1px solid #62758a;
+        border-radius: 8px;
+        color: #17212b;
+        background: #f4f7fb;
+        font-size: 15px;
+    }
+
+    .settings-screen label {
+        display: block;
+        margin-top: 22px;
+        font-weight: 700;
+    }
+
+    .settings-screen .settings-note {
+        color: #c7d3e1;
+        font-size: 13px;
+        line-height: 1.6;
     }
 
     canvas {
@@ -174,8 +201,8 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, waterfalls, high and low ponds, deep rifts, varied islands and rare flat deserts. 5-chunk streamed view radius.</p>
-        <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button>
+        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, natural gravity-driven water flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 5-chunk streamed view radius.</p>
+        <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button><button id="settingsBtn" class="secondary" type="button">Settings</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
     <div id="crosshair"></div>
@@ -187,8 +214,29 @@
             <div class="menu-actions">
                 <button id="playBtn" type="button">Continue Exploring</button>
                 <button id="newWorldBtn" class="secondary" type="button">New World</button>
+                <button id="settingsMenuBtn" class="secondary" type="button">Settings</button>
             </div>
-            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Water moves every 400 ms, falls into open space, and spreads across eligible ground without draining the source.</div>
+            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Water falls under gravity and spreads over reachable ground, with finite horizontal reach.</div>
+        </div>
+    </div>
+    <div id="settingsPage" class="menu-screen settings-screen" style="display:none" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+        <div class="menu-card">
+            <div class="menu-kicker">World options</div>
+            <h1 id="settingsTitle">Settings</h1>
+            <p>Choose the font used by the in-game information panel. This settings page and its controls stay in readable sans-serif.</p>
+            <label for="fontFamily">Interface font</label>
+            <select id="fontFamily">
+                <option value="sans-serif">Sans-serif (default)</option>
+                <option value="monospace">Monospace</option>
+                <option value="serif">Serif</option>
+                <option value="cursive">Cursive / Comic style</option>
+                <option value="fantasy">Fantasy</option>
+                <option value="webdings">Webdings / Wingdings 😈 (if installed)</option>
+            </select>
+            <p class="settings-note">Some decorative fonts only exist on certain devices. If a font is unavailable, your browser will use a fallback.</p>
+            <div class="menu-actions">
+                <button id="settingsDoneBtn" type="button">Done</button>
+            </div>
         </div>
     </div>
 
@@ -353,6 +401,8 @@ let currentRegionData = null
 let voxelEdits = new Map()
 let trackVoxelEdits = false
 let flowingWater = new Map()
+let settingsOpen = false
+let settingsReturnToMenu = false
 let waterfallStreams = new Map()
 let waterfallSourceKeys = new Set()
 let nextWaterfallStreamId = 1
@@ -443,8 +493,15 @@ function get(x, y, z) {
 function set(x, y, z, t) {
     if (x >= 0 && x < N && z >= 0 && z < N && y >= 0 && y < H) {
         const cell = idx(x, y, z)
+        const previous = voxels[cell]
+        if (previous === t) return
         voxels[cell] = t
-        if (trackVoxelEdits) voxelEdits.set(cell, t)
+        if (trackVoxelEdits) {
+            voxelEdits.set(cell, t)
+            const openedOrFlooded = (previous === EMPTY) !== (t === EMPTY) ||
+                isWaterBlock(previous) !== isWaterBlock(t)
+            if (openedOrFlooded) wakeAdjacentWaterCells(x, y, z)
+        }
     }
 }
 
@@ -1334,9 +1391,11 @@ function voxelize() {
     }
 }
 
-const WATER_STEP_INTERVAL = 0.4
+const WATER_STEP_INTERVAL = 0.04
 const WATER_CELLS_PER_STEP = 4096
-const WATER_MAX_HORIZONTAL_STEPS = 7
+const WATER_MAX_HORIZONTAL_STEPS = 3
+const WATER_HORIZONTAL_COOLDOWN_TICKS = 4
+const WATER_DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
 function markWaterChunkDirty(x, z) {
     const cx = worldRegionX * CHUNKS_PER_AXIS + Math.floor(x / CS)
@@ -1346,17 +1405,34 @@ function markWaterChunkDirty(x, z) {
     if (x % CS === CS - 1) chunks.add((cx + 1) + ',' + cz)
     if (z % CS === 0) chunks.add(cx + ',' + (cz - 1))
     if (z % CS === CS - 1) chunks.add(cx + ',' + (cz + 1))
-
     for (const key of chunks) {
         if (chunkMeshes.has(key) && desiredChunkKeys.has(key)) dirtyWaterChunks.add(key)
     }
 }
 
+function wakeAdjacentWaterCells(x, y, z) {
+    const adjacent = [
+        [x + 1, y, z], [x - 1, y, z],
+        [x, y, z + 1], [x, y, z - 1],
+        [x, y + 1, z], [x, y - 1, z]
+    ]
+    for (const [nx, ny, nz] of adjacent) {
+        if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1 ||
+            ny < 1 || ny >= H) continue
+        if (!isWaterBlock(get(nx, ny, nz))) continue
+        const cell = idx(nx, ny, nz)
+        if (!flowingWater.has(cell)) {
+            flowingWater.set(cell, {
+                horizontalSteps: 0,
+                horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+                falling: false
+            })
+        }
+    }
+}
+
 function pruneFloatingWater() {
-    // Terrain fissures and mountain caves are carved after voxelized water is placed.
-    // Remove any water column whose lowest block has been left over open air.
-    // Scan bottom-up so once a floating column's base is removed, every block above it
-    // is checked against the now-empty cell below and removed as well.
+    // Post-carving cleanup: any unsupported water is removed at generation time.
     let removed = 0
     for (let y = 1; y < H; y++) {
         for (let x = 1; x < N - 1; x++) {
@@ -1374,216 +1450,217 @@ function pruneFloatingWater() {
 function addFlowWater(x, y, z, horizontalSteps = 0, extraState = {}) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
-
     set(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), { horizontalSteps, ...extraState })
+    flowingWater.set(idx(x, y, z), {
+        horizontalSteps,
+        horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+        falling: false,
+        ...extraState
+    })
     markWaterChunkDirty(x, z)
     return true
 }
 
-
-
 function flowWaterDownhill() {
-    const seaLevel = oceans.length ? oceans[0].level : 12
-    const sources = ponds
-        .filter(pond => !pond.disabled && Number.isFinite(pond.level) && pond.level > seaLevel)
-        .sort((a, b) => b.level - a.level)
+    // There are no pre-scripted waterfall outlets. Seed exposed freshwater surfaces
+    // into the same finite-flow solver used by all later water movement.
+    waterfallStreams.clear()
+    waterfallSourceKeys.clear()
+    nextWaterfallStreamId = 1
+    for (const [cell, state] of Array.from(flowingWater.entries())) {
+        if (state && state.waterfallId) flowingWater.delete(cell)
+    }
 
-    for (const pond of sources) {
-        const sourceLevel = Math.round(pond.level)
-        const margin = (pond.warp || 0) + 3
-        const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.25 - margin))
-        const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.25 + margin))
-        const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.25 - margin))
-        const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.25 + margin))
-        const outlets = []
+    for (let x = 1; x < N - 1; x++) {
+        for (let z = 1; z < N - 1; z++) {
+            const col = ci(x, z)
+            const surfaceY = waterLevels[col]
+            if (surfaceY < 1 || surfaceY >= H) continue
+            if (get(x, surfaceY, z) !== FRESH_WATER) continue
 
-        for (let x = x0; x <= x1; x++) {
-            for (let z = z0; z <= z1; z++) {
-                const edge = irregularDistance(x, z, pond)
-                if (edge < 0.70 || edge > 1.08) continue
-                if (!isWaterBlock(get(x, sourceLevel, z))) continue
-
-                for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
-                    const nx = x + dx, nz = z + dz
-                    if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                    if (get(nx, sourceLevel, nz) !== EMPTY) continue
-                    if (get(nx, sourceLevel - 1, nz) !== EMPTY) continue
-
-                    const drop = sourceLevel - (heights[ci(nx, nz)] + 1)
-                    if (drop < 2) continue
-                    const score = drop * 2 +
-                        (islandInfluenceAt(x, z) - islandInfluenceAt(nx, nz)) * 3 +
-                        rand(x + nx * 17 + 5603, z + nz * 19 + 5609) * 0.025
-                    outlets.push({
-                        x: nx, z: nz, score,
-                        sourceX: x, sourceZ: z,
-                        sector: ((Math.floor((Math.atan2(z + 0.5 - pond.z, x + 0.5 - pond.x) + Math.PI) / (Math.PI / 2)) % 4) + 4) % 4
-                    })
+            let exposed = false
+            for (const [dx, dz] of WATER_DIRECTIONS) {
+                if (get(x + dx, surfaceY, z + dz) === EMPTY) {
+                    exposed = true
+                    break
                 }
             }
-        }
+            if (!exposed && get(x, surfaceY - 1, z) !== EMPTY) continue
 
-        outlets.sort((a, b) => b.score - a.score)
-        const selected = []
-        const maxOutlets = clamp(Math.ceil((pond.rx + pond.rz) / 9), 4, 8)
-        const minSpacing = 3.2
-
-        function tryOutlet(outlet) {
-            if (selected.length >= maxOutlets) return false
-            const sourceKey = idx(outlet.sourceX, sourceLevel, outlet.sourceZ)
-            if (waterfallSourceKeys.has(sourceKey)) return false
-            if (!isWaterBlock(get(outlet.sourceX, sourceLevel, outlet.sourceZ))) return false
-            if (get(outlet.x, sourceLevel, outlet.z) !== EMPTY) return false
-            if (get(outlet.x, sourceLevel - 1, outlet.z) !== EMPTY) return false
-            if (selected.some(other => Math.hypot(other.sourceX - outlet.sourceX, other.sourceZ - outlet.sourceZ) < minSpacing)) return false
-
-            // Keep the pond source block intact; the stream is fed without draining the lake.
-            const id = nextWaterfallStreamId++
-            set(outlet.x, sourceLevel, outlet.z, FRESH_WATER)
-            flowingWater.set(idx(outlet.x, sourceLevel, outlet.z), { horizontalSteps: 0, waterfallId: id })
-            markWaterChunkDirty(outlet.x, outlet.z)
-
-            waterfallSourceKeys.add(sourceKey)
-            waterfallStreams.set(id, {
-                id,
-                x: outlet.x,
-                z: outlet.z,
-                topY: sourceLevel,
-                bottomY: sourceLevel,
-                sourceX: outlet.sourceX,
-                sourceZ: outlet.sourceZ,
-                sourceLevel,
-                sourceKey,
-                pond,
-                drying: false
-            })
-            selected.push(outlet)
-            return true
-        }
-
-        // Prefer different compass sectors, then fill remaining outlets by drop height.
-        const sectors = [[], [], [], []]
-        for (const outlet of outlets) sectors[outlet.sector].push(outlet)
-        for (const sector of sectors) {
-            for (const outlet of sector) {
-                if (tryOutlet(outlet)) break
+            const cell = idx(x, surfaceY, z)
+            if (!flowingWater.has(cell)) {
+                flowingWater.set(cell, {
+                    horizontalSteps: 0,
+                    horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+                    falling: false,
+                    naturalSource: true
+                })
             }
-        }
-        for (const outlet of outlets) {
-            if (selected.length >= maxOutlets) break
-            tryOutlet(outlet)
         }
     }
 }
 
-function updateWaterfallStreams() {
-    for (const stream of Array.from(waterfallStreams.values())) {
-        const sourceAlive = isWaterBlock(get(stream.sourceX, stream.sourceLevel, stream.sourceZ))
-        const topAlive = isWaterBlock(get(stream.x, stream.topY, stream.z))
+function findNearestWaterDropStep(x, y, z, maxHorizontalSteps) {
+    if (maxHorizontalSteps <= 0) return null
+    const queue = [{ x, z, depth: 0, firstX: null, firstZ: null }]
+    const visited = new Set([x + ',' + z])
+    let head = 0
 
-        if (!sourceAlive || !topAlive) {
-            // If a source is removed, clean only cells belonging to this stream.
-            for (let y = stream.bottomY; y <= stream.topY; y++) {
-                const cell = idx(stream.x, y, stream.z)
-                const state = flowingWater.get(cell)
-                if (state && state.waterfallId === stream.id) {
-                    set(stream.x, y, stream.z, EMPTY)
-                    flowingWater.delete(cell)
-                    markWaterChunkDirty(stream.x, stream.z)
-                }
+    // Breadth-first search guarantees the nearest open drop wins. The search may
+    // walk only across air cells supported by solid ground, and never through blocks.
+    while (head < queue.length) {
+        const node = queue[head++]
+        if (node.depth >= maxHorizontalSteps) continue
+
+        for (const [dx, dz] of WATER_DIRECTIONS) {
+            const nx = node.x + dx, nz = node.z + dz
+            if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+            if (get(nx, y, nz) !== EMPTY) continue
+            const key = nx + ',' + nz
+            if (visited.has(key)) continue
+            visited.add(key)
+
+            const below = get(nx, y - 1, nz)
+            const depth = node.depth + 1
+            const firstX = node.depth === 0 ? nx : node.firstX
+            const firstZ = node.depth === 0 ? nz : node.firstZ
+
+            // Empty space below means a true fall; water below means this route
+            // drains into an existing pool instead of leaving a naked water face.
+            if (below === EMPTY || isWaterBlock(below)) {
+                return { x: firstX, z: firstZ, distance: depth }
             }
-            waterfallSourceKeys.delete(stream.sourceKey)
-            waterfallStreams.delete(stream.id)
-            continue
-        }
 
-        const belowY = stream.bottomY - 1
-        const below = belowY >= 0 ? get(stream.x, belowY, stream.z) : STONE
-
-        if (belowY > 0 && below === EMPTY) {
-            // Extend downward without consuming the pond or any water above it.
-            set(stream.x, belowY, stream.z, FRESH_WATER)
-            flowingWater.set(idx(stream.x, belowY, stream.z), {
-                horizontalSteps: 0,
-                waterfallId: stream.id
-            })
-            stream.bottomY = belowY
-            markWaterChunkDirty(stream.x, stream.z)
-            continue
-        }
-
-        if (isWaterBlock(below)) continue
-
-        if (isSolid(stream.x, belowY, stream.z)) {
-            // When the fall reaches ground, spill in every eligible cardinal direction.
-            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-                const nx = stream.x + dx, nz = stream.z + dz
-                if (get(nx, stream.bottomY, nz) === EMPTY) {
-                    addFlowWater(nx, stream.bottomY, nz, 1)
-                }
+            if (isSolid(nx, y - 1, nz)) {
+                queue.push({ x: nx, z: nz, depth, firstX, firstZ })
             }
         }
     }
+    return null
+}
+
+function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
+    if (get(nx, ny, nz) !== EMPTY) return false
+    const oldCell = idx(x, y, z)
+    flowingWater.delete(oldCell)
+    set(x, y, z, EMPTY)
+    set(nx, ny, nz, type)
+
+    const movedDown = ny < y
+    const movedHorizontally = nx !== x || nz !== z
+    flowingWater.set(idx(nx, ny, nz), {
+        ...state,
+        horizontalSteps: movedDown ? 0 :
+            (movedHorizontally ? (state.horizontalSteps || 0) + 1 : (state.horizontalSteps || 0)),
+        horizontalTicks: movedHorizontally ? 0 : WATER_HORIZONTAL_COOLDOWN_TICKS,
+        falling: movedDown
+    })
+    markWaterChunkDirty(x, z)
+    markWaterChunkDirty(nx, nz)
+    return true
+}
+
+function consumeIntoExistingWater(x, y, z) {
+    const cell = idx(x, y, z)
+    flowingWater.delete(cell)
+    set(x, y, z, EMPTY)
+    markWaterChunkDirty(x, z)
+}
+
+function simulateWaterCell(cell, state) {
+    if (!state) return
+    const x = cell % N
+    const row = Math.floor(cell / N)
+    const z = row % N
+    const y = Math.floor(row / N)
+    const type = get(x, y, z)
+    if (!isWaterBlock(type)) {
+        flowingWater.delete(cell)
+        return
+    }
+
+    if (y > 0) {
+        const below = get(x, y - 1, z)
+        if (below === EMPTY) {
+            // Gravity wins over horizontal spreading: one voxel falls per physics
+            // interval (25 blocks/second), close to the player's terminal fall speed.
+            moveFlowingWater(x, y, z, x, y - 1, z, state, type)
+            return
+        }
+        if (isWaterBlock(below)) {
+            // Water joins the pool below. Do not keep a duplicate floating block.
+            consumeIntoExistingWater(x, y, z)
+            return
+        }
+    }
+
+    const remainingHorizontal = WATER_MAX_HORIZONTAL_STEPS -
+        Math.max(0, state.horizontalSteps || 0)
+    if (remainingHorizontal > 0) {
+        const downhill = findNearestWaterDropStep(x, y, z, remainingHorizontal)
+        if (downhill) {
+            if ((state.horizontalTicks || 0) < WATER_HORIZONTAL_COOLDOWN_TICKS) {
+                state.horizontalTicks = (state.horizontalTicks || 0) + 1
+                return
+            }
+            moveFlowingWater(x, y, z, downhill.x, y, downhill.z, state, type)
+            return
+        }
+
+        // No drop nearby: flow over the exposed, supported sides, but only within
+        // the three-block horizontal run. Each actual water voxel takes one route;
+        // other exposed pool-edge voxels can independently take the other routes.
+        const openSides = []
+        for (const [dx, dz] of WATER_DIRECTIONS) {
+            const nx = x + dx, nz = z + dz
+            if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
+            if (get(nx, y, nz) !== EMPTY) continue
+            if (isSolid(nx, y - 1, nz)) {
+                openSides.push({
+                    x: nx,
+                    z: nz,
+                    supportHeight: heights[ci(nx, nz)],
+                    tieBreak: rand(nx + x * 31, nz + z * 37)
+                })
+            }
+        }
+        openSides.sort((a, b) =>
+            a.supportHeight - b.supportHeight || a.tieBreak - b.tieBreak
+        )
+        if (openSides.length) {
+            if ((state.horizontalTicks || 0) < WATER_HORIZONTAL_COOLDOWN_TICKS) {
+                state.horizontalTicks = (state.horizontalTicks || 0) + 1
+                return
+            }
+            const next = openSides[0]
+            moveFlowingWater(x, y, z, next.x, y, next.z, state, type)
+            return
+        }
+    }
+
+    // Keep stable water in the active set. It checks again every tick, so opening
+    // a route beside/below it (for example by removing a block) resumes flow.
+    state.horizontalTicks = Math.min(
+        WATER_HORIZONTAL_COOLDOWN_TICKS,
+        (state.horizontalTicks || 0) + 1
+    )
 }
 
 function updateWaterPhysics(dt) {
     if (!flowingWater.size) return
     waterPhysicsAccumulator += Math.min(dt, 0.1)
     if (waterPhysicsAccumulator < WATER_STEP_INTERVAL) return
-    waterPhysicsAccumulator %= WATER_STEP_INTERVAL
 
-    updateWaterfallStreams()
+    const stepCount = Math.min(3, Math.floor(waterPhysicsAccumulator / WATER_STEP_INTERVAL))
+    waterPhysicsAccumulator -= stepCount * WATER_STEP_INTERVAL
 
-    const batch = Array.from(flowingWater.keys()).slice(0, WATER_CELLS_PER_STEP)
-    for (const cell of batch) {
-        const state = flowingWater.get(cell)
-        if (!state) continue
-        if (state.waterfallId) continue
-
-        const x = cell % N
-        const row = Math.floor(cell / N)
-        const z = row % N
-        const y = Math.floor(row / N)
-        if (!isWaterBlock(get(x, y, z))) {
-            flowingWater.delete(cell)
-            continue
+    for (let step = 0; step < stepCount; step++) {
+        const batch = Array.from(flowingWater.keys()).slice(0, WATER_CELLS_PER_STEP)
+        for (const cell of batch) {
+            const state = flowingWater.get(cell)
+            if (!state) continue
+            simulateWaterCell(cell, state)
         }
-
-        const below = y > 0 ? get(x, y - 1, z) : STONE
-
-        // Downward movement has priority and leaves the upper water block in place.
-        if (y > 1 && below === EMPTY) {
-            addFlowWater(x, y - 1, z, state.horizontalSteps, { falling: true })
-            state.falling = true
-            continue
-        }
-
-        // A falling cell connected to water below is stable and no longer needs processing.
-        if (isWaterBlock(below)) {
-            flowingWater.delete(cell)
-            continue
-        }
-
-        if (isSolid(x, y - 1, z)) {
-            if (state.horizontalSteps >= WATER_MAX_HORIZONTAL_STEPS) {
-                flowingWater.delete(cell)
-                continue
-            }
-
-            // Try every eligible direction; only occupied destinations are skipped.
-            for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-                const nx = x + dx, nz = z + dz
-                if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                if (get(nx, y, nz) !== EMPTY) continue
-                addFlowWater(nx, y, nz, state.horizontalSteps + 1)
-            }
-            flowingWater.delete(cell)
-            continue
-        }
-
-        // Stop simulating at an ineligible edge, but retain the actual water block.
-        flowingWater.delete(cell)
     }
 }
 
@@ -3159,6 +3236,51 @@ function hideMainMenu() {
         : 'Click the world to capture the mouse.'
 }
 
+const GAME_FONT_STACKS = {
+    "sans-serif": "Arial, Helvetica, sans-serif",
+    "monospace": "Consolas, Monaco, monospace",
+    "serif": "Georgia, 'Times New Roman', serif",
+    "cursive": "'Comic Sans MS', 'Comic Sans', cursive",
+    "fantasy": "Papyrus, fantasy",
+    "webdings": "Webdings, Wingdings, sans-serif"
+}
+
+function applyGameFont(value) {
+    const family = GAME_FONT_STACKS[value] || GAME_FONT_STACKS["sans-serif"]
+    document.documentElement.style.setProperty("--game-ui-font", family)
+    document.getElementById('fontFamily').value =
+        Object.prototype.hasOwnProperty.call(GAME_FONT_STACKS, value) ? value : "sans-serif"
+    try { localStorage.setItem('voxelWorldFontFamily', value) } catch (_) {}
+}
+
+function openSettings() {
+    settingsReturnToMenu = mainMenuOpen
+    settingsOpen = true
+    document.getElementById('mainMenu').style.display = 'none'
+    document.getElementById('settingsPage').style.display = 'flex'
+    if (document.pointerLockElement === canvas) document.exitPointerLock()
+}
+
+function closeSettings() {
+    settingsOpen = false
+    document.getElementById('settingsPage').style.display = 'none'
+    if (settingsReturnToMenu) {
+        mainMenuOpen = true
+        document.getElementById('mainMenu').style.display = 'flex'
+    } else {
+        mainMenuOpen = false
+        document.getElementById('mainMenu').style.display = 'none'
+        status.textContent = 'Settings saved. Click the world to capture the mouse.'
+    }
+}
+
+try {
+    const savedFont = localStorage.getItem('voxelWorldFontFamily')
+    applyGameFont(savedFont || "sans-serif")
+} catch (_) {
+    applyGameFont("sans-serif")
+}
+
 function captureRegionGlobals() {
     return {
         seed, worldRegionX, worldRegionZ, voxels, heights, waterLevels,
@@ -3283,8 +3405,8 @@ function generateRegionData(regionX, regionZ) {
         addTrees()
         pruneFloatingArtifacts()
         pruneFloatingWater()
-        flowWaterDownhill()
         restoreRegionState(regionStateCache.get(key) || null)
+        flowWaterDownhill()
         trackVoxelEdits = true
         decorationBuffersByChunk = addGroundDecorations()
 
@@ -3517,6 +3639,12 @@ document.getElementById('newWorldBtn').addEventListener('click', () => {
     startNewWorld()
     hideMainMenu()
 })
+document.getElementById('settingsBtn').addEventListener('click', openSettings)
+document.getElementById('settingsMenuBtn').addEventListener('click', openSettings)
+document.getElementById('settingsDoneBtn').addEventListener('click', closeSettings)
+document.getElementById('fontFamily').addEventListener('change', event => {
+    applyGameFont(event.target.value)
+})
 
 generate()
 
@@ -3525,7 +3653,7 @@ engine.runRenderLoop(() => {
     const dt = (now - previousTime) / 1000
     previousTime = now
 
-    if (!mainMenuOpen && !worldTransitioning) {
+    if (!mainMenuOpen && !settingsOpen && !worldTransitioning) {
         updatePlayer(dt)
         updateWaterPhysics(dt)
         updateUnderwaterAtmosphere(dt)
