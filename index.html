@@ -226,6 +226,46 @@ const MAX_LOADED_CHUNKS = 400
 const CHUNK_RENDER_RADIUS = 4
 const CHUNKS_PER_AXIS = Math.ceil(N / CS)
 
+const WATCHTOWER_ROWS = [
+    ["..s....",".wwwww.",".wpssw.",".wpssw.",".wsssw.",".wwwww.","......."],
+    [".......",".w.ssw.",".s...s.",".spp.s.",".sp..s.",".wsssw.","......."],
+    [".......",".w.ssw.",".s...s.","...p...",".spp.s.",".wsssw.","......."],
+    ["..w....",".wsssw.",".s...s.","...p...",".s.pps.",".wsssw.","......."],
+    [".......",".ws.sw.",".s...s.","ws.ppsw",".s..ps.",".ws.sw.","......."],
+    [".......",".ws.sw.",".s..ps.",".s.pps.",".s...s.",".ws.sw.","......."],
+    ["...w...",".wsssw.",".s.pps.","...p...",".s...s.",".wsssw.","...w..."],
+    [".......",".wsssw.",".spp.s.","...p...",".s...s.",".wsssw.","......."],
+    [".......",".ws.sw.",".sp..s.","wspp.sw",".s...s.",".ws.sw.","......."],
+    [".......",".ws.sw.",".s...s.",".spp.s.",".sp..s.",".ws.sw.","......."],
+    ["...w...",".wsssw.",".s...s.","...p...",".spp.s.",".wsssw.","...w..."],
+    ["..www..",".wwwww.","ww.ssww","ww.ssww","ww.ssww",".wwwww.","..www.."],
+    [".......",".w...w.",".......",".......",".......",".w...w.","......."],
+    [".......",".w...w.",".......",".......",".......",".w...w.","......."],
+    ["wwwwwww","ww...ww","w.....w","w.....w","w.....w","ww...ww","wwwwwww"],
+    [".......",".wwwww.",".w...w.",".w...w.",".w...w.",".wwwww.","......."],
+    [".......",".......","..www..","..w.w..","..www..",".......","......."],
+    [".......",".......",".......","...w...",".......",".......","......."]
+]
+
+const WATCHTOWER_STRUCTURE = {
+    format: "voxel-structure-v1",
+    size: [7, 18, 7],
+    origin: [-4, 0, -2],
+    // Exact, fixed block layout from the supplied JSON, encoded as rows:
+    // . = empty, s = stone (id 2), w = wood/log (id 3), p = palm wood (id 8).
+    blocks: WATCHTOWER_ROWS.flatMap((layer, y) =>
+        layer.flatMap((row, z) =>
+            Array.from(row).flatMap((symbol, x) => {
+                if (symbol === ".") return []
+                if (symbol === "s") return [{ pos: [x, y, z], type: "stone", id: 2 }]
+                if (symbol === "w") return [{ pos: [x, y, z], type: "wood", id: 3 }]
+                if (symbol === "p") return [{ pos: [x, y, z], type: "palm_wood", id: 8 }]
+                throw new Error("Unknown watchtower template symbol: " + symbol)
+            })
+        )
+    )
+}
+
 const camera = new BABYLON.UniversalCamera(
     'cam', new BABYLON.Vector3(N / 2, 10, N / 2), scene
 )
@@ -289,6 +329,7 @@ let meshes = []
 let chunkMeshes = new Map()
 let desiredChunkKeys = new Set()
 let pendingChunkQueue = []
+let structureFootprints = []
 let flowingWater = new Map()
 let waterfallStreams = new Map()
 let waterfallSourceKeys = new Set()
@@ -389,6 +430,12 @@ function isGrassBlock(type) {
 
 function isWaterBlock(type) {
     return type === WATER || type === FRESH_WATER
+}
+
+function isInsideStructureFootprint(x, z) {
+    return structureFootprints.some(area =>
+        x >= area.minX && x <= area.maxX && z >= area.minZ && z <= area.maxZ
+    )
 }
 
 function isSolid(x, y, z) {
@@ -1928,9 +1975,123 @@ function addTrees() {
         setIfClear(x, h + 1 + logLength, z, DARK_LEAVES)
         return true
     }
+    function placeWatchtower() {
+        // Rare by region, but only eligible inside a dense pine forest.
+        // The template blocks themselves are fixed and never randomized.
+        if (rand(6419 + worldRegionX * 29, 6421 + worldRegionZ * 31) > 0.28) return null
+
+        const seaLevel = oceans[0].level
+        let best = null
+        let bestScore = -Infinity
+
+        // Scan candidate footprints with overlap-safe spacing; choose the densest,
+        // flattest valid pine site so the tower can sit on a real ground platform.
+        for (let x = 8; x <= N - 9; x += 5) {
+            for (let z = 8; z <= N - 9; z += 5) {
+                if (!isPineForestAt(x + 3, z + 3)) continue
+
+                let pineCount = 0
+                let minHeight = H
+                let maxHeight = 0
+                let heightSum = 0
+                let valid = true
+
+                for (let dx = 0; dx < 7 && valid; dx++) {
+                    for (let dz = 0; dz < 7; dz++) {
+                        const wx = x + dx, wz = z + dz
+                        const col = ci(wx, wz)
+                        const groundY = heights[col]
+                        const groundType = get(wx, groundY, wz)
+
+                        if (groundY <= seaLevel + 1 || !isGrassBlock(groundType) ||
+                            isWaterBlock(get(wx, groundY + 1, wz))) {
+                            valid = false
+                            break
+                        }
+                        if (isPineForestAt(wx, wz)) pineCount++
+                        minHeight = Math.min(minHeight, groundY)
+                        maxHeight = Math.max(maxHeight, groundY)
+                        heightSum += groundY
+                    }
+                }
+
+                // Require at least 80% pine coverage over the footprint and a
+                // small enough height difference to safely level the foundation.
+                if (!valid || pineCount < 40 || maxHeight - minHeight > 2) continue
+
+                const flatnessPenalty = (maxHeight - minHeight) * 25
+                const score = pineCount * 10 - flatnessPenalty +
+                    rand(x + 6437, z + 6449) * 0.1
+                if (score > bestScore) {
+                    bestScore = score
+                    best = { x, z, heightSum }
+                }
+            }
+        }
+
+        if (!best) return null
+
+        const groundY = Math.round(best.heightSum / 49)
+        const baseY = groundY + 1
+        if (baseY + WATCHTOWER_STRUCTURE.size[1] - 1 >= H) return null
+
+        // Level the small footprint before placing blocks: cut the high columns,
+        // fill the low ones, and update height metadata consistently.
+        for (let dx = 0; dx < 7; dx++) {
+            for (let dz = 0; dz < 7; dz++) {
+                const wx = best.x + dx, wz = best.z + dz
+                const col = ci(wx, wz)
+                const oldHeight = heights[col]
+
+                if (oldHeight > groundY) {
+                    for (let y = groundY + 1; y <= oldHeight; y++) set(wx, y, wz, EMPTY)
+                } else if (oldHeight < groundY) {
+                    for (let y = oldHeight + 1; y < groundY; y++) set(wx, y, wz, DIRT)
+                }
+
+                set(wx, groundY, wz, isPineForestAt(wx, wz) ? DARK_GRASS : GRASS)
+                heights[col] = groundY
+            }
+        }
+
+        // The structure is placed exactly once, from its immutable block list.
+        for (const block of WATCHTOWER_STRUCTURE.blocks) {
+            const wx = best.x + block.pos[0]
+            const wy = baseY + block.pos[1]
+            const wz = best.z + block.pos[2]
+            if (wx < 1 || wx >= N - 1 || wz < 1 || wz >= N - 1 ||
+                wy < 0 || wy >= H || get(wx, wy, wz) !== EMPTY) {
+                // This should be impossible after terrain leveling; fail closed.
+                // Avoid leaving a partial structure if a future generator adds features.
+                for (const placed of WATCHTOWER_STRUCTURE.blocks) {
+                    const px = best.x + placed.pos[0]
+                    const py = baseY + placed.pos[1]
+                    const pz = best.z + placed.pos[2]
+                    if (py >= 0 && py < H && get(px, py, pz) === placed.id) set(px, py, pz, EMPTY)
+                }
+                return null
+            }
+        }
+
+        for (const block of WATCHTOWER_STRUCTURE.blocks) {
+            set(best.x + block.pos[0], baseY + block.pos[1], best.z + block.pos[2], block.id)
+        }
+
+        structureFootprints.push({
+            minX: best.x, maxX: best.x + 6,
+            minZ: best.z, maxZ: best.z + 6,
+            baseY,
+            name: "watchtower"
+        })
+        return { x: best.x, z: best.z, baseY }
+    }
+
+    const watchtowerPlacement = placeWatchtower()
+
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
             const col = ci(x,z), h = heights[col]
+            if (isInsideStructureFootprint(x, z)) continue
             if (get(x,h,z) !== SAND || desertInfluenceAt(x,z) < 0.42) continue
             if (rand(x + 3299, z + 3301) > 0.018) continue
             placeCactus(x,z,h)
@@ -1939,6 +2100,7 @@ function addTrees() {
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
             const col=ci(x,z), h=heights[col]
+            if (isInsideStructureFootprint(x, z)) continue
             if (h <= seaLevel || !isGrassBlock(get(x,h,z))) continue
             const desert = desertInfluenceAt(x,z)
             if (desert > 0.32) continue
@@ -2173,6 +2335,7 @@ function addGroundDecorations() {
     for (let x = 1; x < N - 1; x++) {
         for (let z = 1; z < N - 1; z++) {
             const col = ci(x, z)
+            if (isInsideStructureFootprint(x, z)) continue
             if (heights[col] <= waterLevels[col]) continue
             if (desertInfluenceAt(x, z) > 0.38) continue
 
@@ -2864,6 +3027,7 @@ function streamToRegion() {
 function generate() {
     for (const m of meshes) m.dispose()
     meshes = []
+    structureFootprints = []
     chunkMeshes.clear()
     desiredChunkKeys = new Set()
     pendingChunkQueue = []
