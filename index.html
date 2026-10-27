@@ -586,27 +586,52 @@ function generateInfiniteChunkTerrain(cx, cz) {
     const x0 = cx * CS, z0 = cz * CS, seaLevel = 12
     for (let x = x0; x < x0 + CS; x++) for (let z = z0; z < z0 + CS; z++) {
         const gx = worldOriginX + x, gz = worldOriginZ + z
-        let height = infiniteTerrainHeight(gx, gz)
-        let waterLevel = height < seaLevel ? seaLevel : EMPTY, waterType = WATER
+        const naturalHeight = infiniteTerrainHeight(gx, gz)
+        let height = naturalHeight
+        let waterLevel = naturalHeight < seaLevel ? seaLevel : EMPTY
+        let waterType = WATER
         const lakeHit = findInfiniteLakeAt(gx, gz)
+
         if (lakeHit) {
             const { lake, edge } = lakeHit
-            if (edge <= 1) {
-                height = Math.min(height, lake.level - (2 + Math.floor((1 - edge) * 4)))
-                waterLevel = lake.level; waterType = FRESH_WATER
-            } else if (edge <= 1.28) {
-                height = Math.max(height, lake.level + 2); waterLevel = EMPTY
+            // Carve a shallow, smoothly blended basin instead of raising a ring wall.
+            // The lake floor is lowest near its center and fades back into untouched
+            // terrain over a broad shoreline transition.
+            const floorTarget = lake.level - 4
+            const basinInfluence = 1 - smoothstep(0.56, 1.34, edge)
+            const availableDepth = Math.max(0, naturalHeight - floorTarget)
+            height = Math.min(naturalHeight,
+                Math.round(naturalHeight - availableDepth * basinInfluence))
+
+            // Fill only where the blended ground sits below the lake surface. The
+            // sloped sides remain terrain, so the shoreline looks like a natural hollow.
+            if (edge <= 1.34 && height < lake.level) {
+                waterLevel = lake.level
+                waterType = FRESH_WATER
             }
         }
+
         height = clamp(Math.round(height), 1, H - 9)
-        const col = ci(x, z); heights[col] = height; waterLevels[col] = waterLevel
-        const biome = worldBiomeAt(gx, gz), underwater = waterLevel !== EMPTY && height < waterLevel
-        const topType = biome.desert || (underwater && height >= seaLevel - 4) ? SAND : biome.pine ? DARK_GRASS : GRASS
+        const col = ci(x, z)
+        heights[col] = height
+        waterLevels[col] = waterLevel
+        const biome = worldBiomeAt(gx, gz)
+        const underwater = waterLevel !== EMPTY && height < waterLevel
+        const topType = biome.desert || (underwater && height >= seaLevel - 4)
+            ? SAND
+            : biome.pine ? DARK_GRASS : GRASS
         for (let y = 0; y <= height; y++) {
-            const type = y === height ? topType : ((topType === SAND && y >= height - 4) || y >= height - 3) ? DIRT : STONE
+            const type = y === height
+                ? topType
+                : ((topType === SAND && y >= height - 4) || y >= height - 3)
+                    ? DIRT : STONE
             voxels[idx(x, y, z)] = type
         }
-        if (waterLevel !== EMPTY) for (let y = height + 1; y <= waterLevel && y < H; y++) voxels[idx(x, y, z)] = waterType
+        if (waterLevel !== EMPTY) {
+            for (let y = height + 1; y <= waterLevel && y < H; y++) {
+                voxels[idx(x, y, z)] = waterType
+            }
+        }
     }
 }
 function applySavedChunkEdits(absChunkX, absChunkZ, localChunkX, localChunkZ) {
@@ -753,7 +778,16 @@ function shiftWorldWindow(dx, dz) {
         if (nx < 0 || nx >= CHUNKS_PER_AXIS || nz < 0 || nz >= CHUNKS_PER_AXIS) {
             for (const mesh of chunkList) { mesh.dispose(); const i = meshes.indexOf(mesh); if (i >= 0) meshes.splice(i, 1) }
         } else {
-            for (const mesh of chunkList) { mesh.position.x -= shiftX; mesh.position.z -= shiftZ }
+            for (const mesh of chunkList) {
+                const shouldFreeze = mesh.material !== materials[WATER] &&
+                    mesh.material !== materials[FRESH_WATER] &&
+                    !decorationMaterials.includes(mesh.material)
+                mesh.unfreezeWorldMatrix()
+                mesh.position.x -= shiftX
+                mesh.position.z -= shiftZ
+                mesh.computeWorldMatrix(true)
+                if (shouldFreeze) mesh.freezeWorldMatrix()
+            }
             remappedChunks.set(nx + "," + nz, chunkList)
         }
     }
