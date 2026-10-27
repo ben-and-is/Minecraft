@@ -594,18 +594,15 @@ function generateInfiniteChunkTerrain(cx, cz) {
 
         if (lakeHit) {
             const { lake, edge } = lakeHit
-            // Carve a shallow, smoothly blended basin instead of raising a ring wall.
-            // The lake floor is lowest near its center and fades back into untouched
-            // terrain over a broad shoreline transition.
-            const floorTarget = lake.level - 4
-            const basinInfluence = 1 - smoothstep(0.56, 1.34, edge)
+            // Keep the base terrain generator unchanged; shape only the immediate
+            // lake footprint with a small, smooth depression and no raised rim.
+            const floorTarget = lake.level - 3
+            const basinInfluence = 1 - smoothstep(0.68, 1.12, edge)
             const availableDepth = Math.max(0, naturalHeight - floorTarget)
             height = Math.min(naturalHeight,
                 Math.round(naturalHeight - availableDepth * basinInfluence))
 
-            // Fill only where the blended ground sits below the lake surface. The
-            // sloped sides remain terrain, so the shoreline looks like a natural hollow.
-            if (edge <= 1.34 && height < lake.level) {
+            if (edge <= 1.12 && height < lake.level) {
                 waterLevel = lake.level
                 waterType = FRESH_WATER
             }
@@ -782,9 +779,21 @@ function shiftWorldWindow(dx, dz) {
                 const shouldFreeze = mesh.material !== materials[WATER] &&
                     mesh.material !== materials[FRESH_WATER] &&
                     !decorationMaterials.includes(mesh.material)
+                // Chunk vertices already use local world coordinates. Move the
+                // geometry itself instead of relying on transforms of frozen meshes.
                 mesh.unfreezeWorldMatrix()
-                mesh.position.x -= shiftX
-                mesh.position.z -= shiftZ
+                const vertexPositions = mesh.getVerticesData(BABYLON.VertexBuffer.PositionKind)
+                if (vertexPositions && vertexPositions.length) {
+                    const shiftedPositions = Array.from(vertexPositions)
+                    for (let i = 0; i < shiftedPositions.length; i += 3) {
+                        shiftedPositions[i] -= shiftX
+                        shiftedPositions[i + 2] -= shiftZ
+                    }
+                    mesh.setVerticesData(BABYLON.VertexBuffer.PositionKind, shiftedPositions, true)
+                    mesh.refreshBoundingInfo()
+                }
+                mesh.position.x = 0
+                mesh.position.z = 0
                 mesh.computeWorldMatrix(true)
                 if (shouldFreeze) mesh.freezeWorldMatrix()
             }
