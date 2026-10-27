@@ -201,7 +201,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Depth-darkening freshwater and saltwater, natural gravity-driven water flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 5-chunk streamed view radius.</p>
+        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Left-click a block while the mouse is captured to mine it and open new water paths. Natural freshwater and saltwater, gravity-driven flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 5-chunk streamed view radius.</p>
         <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button><button id="settingsBtn" class="secondary" type="button">Settings</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -210,7 +210,7 @@
         <div class="menu-card">
             <div class="menu-kicker">Procedural voxel exploration</div>
             <h1 id="menuTitle">Voxel World</h1>
-            <p>Explore a living archipelago with rivers, waterfalls, forests, and new procedurally generated regions as you travel beyond the horizon.</p>
+            <p>Explore a living archipelago with rivers, forests, and natural water that follows the terrain as you travel beyond the horizon.</p>
             <div class="menu-actions">
                 <button id="playBtn" type="button">Continue Exploring</button>
                 <button id="newWorldBtn" class="secondary" type="button">New World</button>
@@ -3630,6 +3630,39 @@ document.addEventListener('mousemove', e => {
     pitch += e.movementY * .002
     pitch = clamp(pitch, -Math.PI / 2 + .02, Math.PI / 2 - .02)
     syncCamera()
+})
+
+function raycastVoxel(maxDistance = 6) {
+    const direction = {
+        x: Math.sin(yaw) * Math.cos(pitch),
+        y: -Math.sin(pitch),
+        z: Math.cos(yaw) * Math.cos(pitch)
+    }
+    const origin = {
+        x: playerX,
+        y: feetY + cameraEyeHeight,
+        z: playerZ
+    }
+    const stepSize = 0.04
+    for (let distance = 0.12; distance <= maxDistance; distance += stepSize) {
+        const x = Math.floor(origin.x + direction.x * distance)
+        const y = Math.floor(origin.y + direction.y * distance)
+        const z = Math.floor(origin.z + direction.z * distance)
+        const type = get(x, y, z)
+        if (type !== EMPTY) return { x, y, z, type }
+    }
+    return null
+}
+
+canvas.addEventListener('mousedown', event => {
+    if (!mouseLocked || event.button !== 0 || mainMenuOpen || settingsOpen) return
+    const target = raycastVoxel()
+    if (!target || target.y <= 0) return
+    const cell = idx(target.x, target.y, target.z)
+    if (isWaterBlock(target.type)) flowingWater.delete(cell)
+    set(target.x, target.y, target.z, EMPTY)
+    markWaterChunkDirty(target.x, target.z)
+    status.textContent = 'Block mined. Nearby water is rechecking open paths.'
 })
 
 document.getElementById('g').addEventListener('click', startNewWorld)
