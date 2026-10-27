@@ -23,7 +23,8 @@
         background: #87ceeb;
     }
 
-    .ui {
+    .ui,
+    .ui * {
         font-family: var(--game-ui-font, Arial, Helvetica, sans-serif);
     }
 
@@ -1421,7 +1422,13 @@ function wakeAdjacentWaterCells(x, y, z) {
             ny < 1 || ny >= H) continue
         if (!isWaterBlock(get(nx, ny, nz))) continue
         const cell = idx(nx, ny, nz)
-        if (!flowingWater.has(cell)) {
+        const state = flowingWater.get(cell)
+        if (state) {
+            // Terrain edits can reveal a new route even after the horizontal limit.
+            state.horizontalSteps = 0
+            state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
+            state.falling = false
+        } else {
             flowingWater.set(cell, {
                 horizontalSteps: 0,
                 horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
@@ -3654,6 +3661,19 @@ function raycastVoxel(maxDistance = 6) {
     return null
 }
 
+function recalculateColumnHeight(x, z) {
+    const col = ci(x, z)
+    for (let y = H - 1; y >= 0; y--) {
+        const type = get(x, y, z)
+        if (type !== EMPTY && !isWaterBlock(type)) {
+            heights[col] = y
+            return y
+        }
+    }
+    heights[col] = 0
+    return 0
+}
+
 canvas.addEventListener('mousedown', event => {
     if (!mouseLocked || event.button !== 0 || mainMenuOpen || settingsOpen) return
     const target = raycastVoxel()
@@ -3661,6 +3681,7 @@ canvas.addEventListener('mousedown', event => {
     const cell = idx(target.x, target.y, target.z)
     if (isWaterBlock(target.type)) flowingWater.delete(cell)
     set(target.x, target.y, target.z, EMPTY)
+    recalculateColumnHeight(target.x, target.z)
     markWaterChunkDirty(target.x, target.z)
     status.textContent = 'Block mined. Nearby water is rechecking open paths.'
 })
