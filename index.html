@@ -2035,6 +2035,18 @@ function addTrees() {
         const baseY = groundY + 1
         if (baseY + WATCHTOWER_STRUCTURE.size[1] - 1 >= H) return null
 
+        // Preflight before changing terrain. Any non-terrain block in the tower's
+        // vertical volume invalidates this site, rather than being overwritten.
+        for (const block of WATCHTOWER_STRUCTURE.blocks) {
+            const wx = best.x + block.pos[0]
+            const wy = baseY + block.pos[1]
+            const wz = best.z + block.pos[2]
+            if (wx < 1 || wx >= N - 1 || wz < 1 || wz >= N - 1 ||
+                wy < 0 || wy >= H) return null
+            const oldHeight = heights[ci(wx, wz)]
+            if (wy > oldHeight && get(wx, wy, wz) !== EMPTY) return null
+        }
+
         // Level the small footprint before placing blocks: cut the high columns,
         // fill the low ones, and update height metadata consistently.
         for (let dx = 0; dx < 7; dx++) {
@@ -2054,25 +2066,8 @@ function addTrees() {
             }
         }
 
-        // The structure is placed exactly once, from its immutable block list.
-        for (const block of WATCHTOWER_STRUCTURE.blocks) {
-            const wx = best.x + block.pos[0]
-            const wy = baseY + block.pos[1]
-            const wz = best.z + block.pos[2]
-            if (wx < 1 || wx >= N - 1 || wz < 1 || wz >= N - 1 ||
-                wy < 0 || wy >= H || get(wx, wy, wz) !== EMPTY) {
-                // This should be impossible after terrain leveling; fail closed.
-                // Avoid leaving a partial structure if a future generator adds features.
-                for (const placed of WATCHTOWER_STRUCTURE.blocks) {
-                    const px = best.x + placed.pos[0]
-                    const py = baseY + placed.pos[1]
-                    const pz = best.z + placed.pos[2]
-                    if (py >= 0 && py < H && get(px, py, pz) === placed.id) set(px, py, pz, EMPTY)
-                }
-                return null
-            }
-        }
-
+        // The complete site was preflighted and leveled above; the following
+        // loop writes the immutable template exactly once, with no partial fallback.
         for (const block of WATCHTOWER_STRUCTURE.blocks) {
             set(best.x + block.pos[0], baseY + block.pos[1], best.z + block.pos[2], block.id)
         }
