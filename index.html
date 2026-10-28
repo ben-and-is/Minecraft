@@ -1403,8 +1403,9 @@ function markWaterChunkDirty(x, z) {
 }
 
 function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
-    // Mining wakes cells throughout three blocks; normal fluid movement wakes
-    // only adjacent water and preserves the neighbour's horizontal travel budget.
+    // Mining wakes cells across the three-block detection radius. Routine flow
+    // only activates inactive neighbours; it must never reset an active cell's
+    // horizontal cooldown or travel budget, otherwise water appears to teleport.
     for (let dx = -radius; dx <= radius; dx++) {
         for (let dz = -radius; dz <= radius; dz++) {
             if (Math.abs(dx) + Math.abs(dz) > radius) continue
@@ -1416,13 +1417,14 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
                 const cell = idx(nx, ny, nz)
                 const state = flowingWater.get(cell)
                 if (state) {
-                    if (resetReach) state.horizontalSteps = 0
+                    if (!resetReach) continue
+                    state.horizontalSteps = 0
                     state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
                     state.falling = false
                 } else {
                     flowingWater.set(cell, {
                         horizontalSteps: 0,
-                        horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+                        horizontalTicks: resetReach ? WATER_HORIZONTAL_COOLDOWN_TICKS : 0,
                         falling: false
                     })
                 }
