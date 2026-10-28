@@ -412,6 +412,7 @@ let flowingWater = new Map()
 let settingsOpen = false
 let settingsReturnToMenu = false
 let regionGenerationPromises = new Map()
+let worldGenerationEpoch = 0
 let chunkBuildBusy = false
 let dirtyWaterChunks = new Set()
 let waterPhysicsAccumulator = 0
@@ -1460,20 +1461,6 @@ function setFluidVoxel(x, y, z, type) {
     try { set(x, y, z, type) } finally { trackVoxelEdits = tracking }
 }
 
-function addFlowWater(x, y, z, horizontalSteps = 0, extraState = {}) {
-    if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
-    if (get(x, y, z) !== EMPTY) return false
-    setFluidVoxel(x, y, z, FRESH_WATER)
-    flowingWater.set(idx(x, y, z), {
-        horizontalSteps,
-        horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
-        falling: false,
-        ...extraState
-    })
-    markWaterChunkDirty(x, z)
-    return true
-}
-
 function flowWaterDownhill() {
     // Seed exposed freshwater surfaces into the general finite-flow solver.
     // There are no preset waterfall outlets or suspended stream columns.
@@ -1565,14 +1552,6 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
     wakeAdjacentWaterCells(x, y, z, 1, false)
     wakeAdjacentWaterCells(nx, ny, nz, 1, false)
     return true
-}
-
-function consumeIntoExistingWater(x, y, z) {
-    const cell = idx(x, y, z)
-    flowingWater.delete(cell)
-    setFluidVoxel(x, y, z, EMPTY)
-    markWaterChunkDirty(x, z)
-    wakeAdjacentWaterCells(x, y, z, 1, false)
 }
 
 function simulateWaterCell(cell, state) {
@@ -3618,7 +3597,6 @@ async function generate() {
     pendingChunkQueue = []
     dirtyWaterChunks = new Set()
     chunkLoadStatusActive = true
-    chunkBuildBusy = false
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
     generatedRegionCache.clear()
