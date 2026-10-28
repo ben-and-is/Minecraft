@@ -412,6 +412,8 @@ let flowingWater = new Map()
 let settingsOpen = false
 let settingsReturnToMenu = false
 let regionGenerationPromises = new Map()
+let regionGenerationQueue = Promise.resolve()
+let regionGenerationStageActive = false
 let worldGenerationEpoch = 0
 let chunkBuildBusy = false
 let dirtyWaterChunks = new Set()
@@ -480,6 +482,7 @@ let previousTime = performance.now()
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const ci = (x, z) => z * N + x
 const idx = (x, y, z) => (y * N + z) * N + x
+const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0))
 
 function isCrouching() {
     return keys.has('ControlLeft') || keys.has('ControlRight') ||
@@ -1109,7 +1112,7 @@ function applyOceanRiftsToHeightMap() {
     }
 }
 
-function createHeightMap() {
+async function createHeightMap() {
     const seaLevel = oceans.length ? oceans[0].level : 12
     const edgeBlendWidth = 22
     for (let x = 0; x < N; x++) {
@@ -1124,6 +1127,7 @@ function createHeightMap() {
             }
             heights[ci(x, z)] = h
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
 }
 
@@ -1131,7 +1135,7 @@ function createOceans() {
     waterLevels.fill(oceans[0].level)
 }
 
-function createPonds() {
+async function createPonds() {
     const seaLevel = oceans[0].level
 
     for (const pond of ponds) {
@@ -1171,6 +1175,7 @@ function createPonds() {
                         best = { x: x + 0.5, z: z + 0.5, landHeight }
                     }
                 }
+                if (((x - minX) & 7) === 7) await yieldToBrowser()
             }
 
             if (!best) {
@@ -1206,21 +1211,31 @@ function createPonds() {
             for (let z = z0; z <= z1; z++) {
                 const baseEdge = irregularDistance(x, z, pond)
                 const broadShoreNoise =
-                    (noise(x * 0.045 + pond.x * 0.19, z * 0.045 + pond.z * 0.19) - 0.5) * 0.24
+                    (noise(x * 0.037 + pond.x * 0.19, z * 0.037 + pond.z * 0.19) - 0.5) * 0.34
                 const fineShoreNoise =
                     (noise(x * 0.13 + pond.z * 0.11 + 5.7,
-                        z * 0.13 + pond.x * 0.11 + 9.2) - 0.5) * 0.10
-                const edge = baseEdge + broadShoreNoise + fineShoreNoise
-                if (edge > 1.68) continue
+                        z * 0.13 + pond.x * 0.11 + 9.2) - 0.5) * 0.14
+                const creekWander =
+                    Math.sin((x * 0.41 + z * 0.23) + pond.x * 0.09) *
+                    Math.sin((z * 0.31 - x * 0.17) + pond.z * 0.08) * 0.055
+                const edge = baseEdge + broadShoreNoise + fineShoreNoise + creekWander
+                if (edge > 1.78) continue
 
                 const col = ci(x, z)
                 const originalHeight = heights[col]
                 if (edge <= 1) {
-                    const depth = pond.kind === 'large'
-                        ? 1 + Math.floor(Math.max(0, 1 - edge) * 4)
-                        : pond.kind === 'medium'
-                            ? 1 + Math.floor(Math.max(0, 1 - edge) * 3)
-                            : 1 + Math.floor(Math.max(0, 1 - edge) * 4)
+                    const basinT = clamp((1.06 - edge) / 1.06, 0, 1)
+                    const depthCap = pond.kind === 'large' ? 7 : pond.kind === 'medium' ? 5 : 4
+                    const broadFloorVariation =
+                        (noise(x * 0.083 + pond.z * 0.17 + 12.7,
+                            z * 0.083 + pond.x * 0.17 + 18.3) - 0.5) * 2.2
+                    const fineFloorVariation =
+                        (noise(x * 0.24 + pond.x * 0.08 + 29.1,
+                            z * 0.24 + pond.z * 0.08 + 6.4) - 0.5) * 1.0
+                    const depth = Math.max(1, Math.round(
+                        1 + basinT * (depthCap - 1) +
+                        (broadFloorVariation + fineFloorVariation) * basinT
+                    ))
                     heights[col] = Math.min(originalHeight, Math.max(1, pond.level - depth))
                     waterLevels[col] = pond.level
                 } else if (originalHeight > seaLevel && originalHeight > pond.level) {
@@ -1238,6 +1253,7 @@ function createPonds() {
                     heights[col] = Math.max(seaLevel + 1, Math.min(originalHeight, target))
                 }
             }
+            if (((x - x0) & 7) === 7) await yieldToBrowser()
         }
 
         // No raised ring or retaining wall: shore shape comes from terrain carving
@@ -1245,7 +1261,7 @@ function createPonds() {
     }
 }
 
-function createRiverChannels() {
+async function createRiverChannels() {
     const seaLevel = oceans[0].level
 
     for (const pond of ponds) {
@@ -1303,6 +1319,7 @@ function createRiverChannels() {
                         }
                     }
                 }
+                if ((step & 7) === 7) await yieldToBrowser()
             }
         }
     }
@@ -1338,7 +1355,7 @@ function isFreshWaterColumnAt(x, z) {
     return false
 }
 
-function voxelize() {
+async function voxelize() {
     voxels.fill(EMPTY)
 
     const mountainStoneThreshold = mountains.length
@@ -1370,6 +1387,7 @@ function voxelize() {
                 set(x, y, z, type)
             }
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
     for (let x = 0; x < N; x++) {
         for (let z = 0; z < N; z++) {
@@ -1380,6 +1398,7 @@ function voxelize() {
                 if (get(x, y, z) === EMPTY) set(x, y, z, waterType)
             }
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
 }
 
@@ -1433,7 +1452,7 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
     }
 }
 
-function pruneFloatingWater() {
+async function pruneFloatingWater() {
     // Water is voxelized only above the column terrain and below its water level.
     // Limit the cleanup scan to these candidate cells rather than all world voxels.
     let removed = 0
@@ -1452,6 +1471,7 @@ function pruneFloatingWater() {
                 break
             }
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
     return removed
 }
@@ -1669,13 +1689,14 @@ async function processDirtyWaterChunks() {
     dirtyWaterChunks.delete(key)
     if (!desiredChunkKeys.has(key) || !chunkMeshes.has(key)) return
 
+    const buildEpoch = worldGenerationEpoch
     const previous = chunkMeshes.get(key)
     const [cx, cz] = key.split(',').map(Number)
     chunkBuildBusy = true
     try {
         const replacement = await buildChunk(cx, cz)
         if (!replacement) return
-        if (desiredChunkKeys.has(key) && chunkMeshes.get(key) === previous) {
+        if (buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(key) && chunkMeshes.get(key) === previous) {
             chunkMeshes.set(key, replacement)
             for (const mesh of previous) {
                 mesh.dispose()
@@ -1690,15 +1711,15 @@ async function processDirtyWaterChunks() {
             }
         }
     } catch (error) {
-        if (desiredChunkKeys.has(key)) dirtyWaterChunks.add(key)
-        console.error('Could not rebuild water-updated chunk ' + key, error)
+        if (buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(key)) dirtyWaterChunks.add(key)
+        if (buildEpoch === worldGenerationEpoch) console.error('Could not rebuild water-updated chunk ' + key, error)
     } finally {
         chunkBuildBusy = false
     }
 }
 
 
-function carveSurfaceFissures() {
+async function carveSurfaceFissures() {
     const seaLevel = oceans[0].level
 
     for (const fissure of surfaceFissures) {
@@ -1739,11 +1760,12 @@ function carveSurfaceFissures() {
                     }
                 }
             }
+            if ((x & 7) === 7) await yieldToBrowser()
         }
     }
 }
 
-function carveMountainCaves() {
+async function carveMountainCaves() {
     const seaLevel = oceans[0].level
 
     for (let mountainIndex = 0; mountainIndex < mountains.length; mountainIndex++) {
@@ -1817,6 +1839,7 @@ function carveMountainCaves() {
                         }
                     }
                 }
+                if ((x & 7) === 7) await yieldToBrowser()
             }
             for (let x = minX; x <= maxX; x++) {
                 for (let z = minZ; z <= maxZ; z++) {
@@ -1848,6 +1871,7 @@ function carveMountainCaves() {
                         }
                     }
                 }
+                if ((x & 7) === 7) await yieldToBrowser()
             }
             const chamberAlong = depth * (0.62 + rand(caveKey + 1043, caveKey + 1051) * 0.20)
             const chamberSide = (rand(caveKey + 1061, caveKey + 1063) - 0.5) * sideBend
@@ -1921,12 +1945,13 @@ function carveMountainCaves() {
                         }
                     }
                 }
+                if ((x & 7) === 7) await yieldToBrowser()
             }
         }
     }
 }
 
-function pruneFloatingArtifacts() {
+async function pruneFloatingArtifacts() {
     for (let x = 1; x < N - 1; x++) {
         for (let z = 1; z < N - 1; z++) {
             // Preserve the watchtower's exact supplied template, including its
@@ -1945,10 +1970,11 @@ function pruneFloatingArtifacts() {
                 if (!supported) set(x,y,z,EMPTY)
             }
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
 }
 
-function addTrees() {
+async function addTrees() {
     const seaLevel = oceans[0].level
 
     function hasWaterNearby(x, z, radius) {
@@ -2103,7 +2129,7 @@ function addTrees() {
         setIfClear(x, h + 1 + logLength, z, DARK_LEAVES)
         return true
     }
-    function placeWatchtower() {
+    async function placeWatchtower() {
         // Rare by region, but only eligible inside a dense pine forest.
         // The template blocks themselves are fixed and never randomized.
         if (rand(6419 + worldRegionX * 29, 6421 + worldRegionZ * 31) > 0.28) return null
@@ -2155,6 +2181,7 @@ function addTrees() {
                     best = { x, z, heightSum }
                 }
             }
+            if ((x % 40) === 8) await yieldToBrowser()
         }
 
         if (!best) return null
@@ -2211,9 +2238,9 @@ function addTrees() {
         return { x: best.x, z: best.z, baseY }
     }
 
-    const watchtowerPlacement = placeWatchtower()
+    const watchtowerPlacement = await placeWatchtower()
 
-    function placeAncientRuin() {
+    async function placeAncientRuin() {
         // An uncommon, fixed-layout ruin may appear on an eligible plains site per region.
         if (rand(7103 + worldRegionX * 13, 7109 + worldRegionZ * 17) > 0.82) return null
         const seaLevel = oceans[0].level
@@ -2255,6 +2282,7 @@ function addTrees() {
                     best = { x, z, heightSum }
                 }
             }
+            if (((x - 10) & 31) === 10) await yieldToBrowser()
         }
         if (!best) return null
         const groundY = Math.round(best.heightSum / (width * depth))
@@ -2298,7 +2326,7 @@ function addTrees() {
         return { x: best.x, z: best.z, baseY }
     }
 
-    const ancientRuinPlacement = placeAncientRuin()
+    const ancientRuinPlacement = await placeAncientRuin()
 
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
@@ -2308,6 +2336,7 @@ function addTrees() {
             if (rand(x + 3299, z + 3301) > 0.018) continue
             placeCactus(x,z,h)
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
     for (let x = 3; x < N - 3; x++) {
         for (let z = 3; z < N - 3; z++) {
@@ -2342,6 +2371,7 @@ function addTrees() {
                 placeNormalTree(x,z,h)
             }
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
 }
 
@@ -2641,13 +2671,14 @@ function getChunkDecorationBuffers(data, chunkX, chunkZ) {
 }
 
 async function buildChunk(cx, cz) {
+    const buildEpoch = worldGenerationEpoch
     const key = cx + ',' + cz
     const regionX = Math.floor(cx / CHUNKS_PER_AXIS)
     const regionZ = Math.floor(cz / CHUNKS_PER_AXIS)
     const localCX = cx - regionX * CHUNKS_PER_AXIS
     const localCZ = cz - regionZ * CHUNKS_PER_AXIS
     const data = await getRegionData(regionX, regionZ)
-    if (!desiredChunkKeys.has(key)) return null
+    if (buildEpoch !== worldGenerationEpoch || !desiredChunkKeys.has(key)) return null
     const chunkList = []
     const groups = Array.from({ length: MCOUNT }, () => ({
         p: [], n: [], u: [], c: [], i: []
@@ -2790,6 +2821,7 @@ async function processChunkBuildQueue() {
         return
     }
 
+    const buildEpoch = worldGenerationEpoch
     chunkBuildBusy = true
     chunkLoadStatusActive = true
     status.textContent = 'Seed: ' + seed + '. Loading nearby chunks: ' +
@@ -2797,7 +2829,7 @@ async function processChunkBuildQueue() {
 
     try {
         const builtMeshes = await buildChunk(chunk.cx, chunk.cz)
-        if (builtMeshes && desiredChunkKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
+        if (builtMeshes && buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
             chunkMeshes.set(chunk.key, builtMeshes)
         } else if (builtMeshes) {
             for (const mesh of builtMeshes) {
@@ -2807,7 +2839,7 @@ async function processChunkBuildQueue() {
             }
         }
     } catch (error) {
-        if (desiredChunkKeys.has(chunk.key) &&
+        if (buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(chunk.key) &&
             !pendingChunkQueue.some(item => item.key === chunk.key)) {
             pendingChunkQueue.unshift(chunk)
         }
@@ -3400,7 +3432,8 @@ async function generateRegionData(regionX, regionZ) {
     if (regionGenerationPromises.has(key)) return regionGenerationPromises.get(key)
 
     const epoch = worldGenerationEpoch
-    const pending = (async () => {
+    const pending = regionGenerationQueue.catch(() => undefined).then(async () => {
+        if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
         let work = {
             ...captureRegionGlobals(),
             worldRegionX: regionX,
@@ -3434,16 +3467,17 @@ async function generateRegionData(regionX, regionZ) {
         async function runStage(action) {
             if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
             const live = captureRegionGlobals()
+            regionGenerationStageActive = true
             try {
                 restoreRegionGlobals(work)
-                action()
+                await action()
+                if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
                 work = captureRegionGlobals()
             } finally {
                 restoreRegionGlobals(live)
+                regionGenerationStageActive = false
             }
-            // Yield between expensive generation passes, so the render loop can keep
-            // drawing already-loaded chunks while the next region is prepared.
-            await new Promise(resolve => setTimeout(resolve, 0))
+            await yieldToBrowser()
         }
 
         await runStage(createWorldFeatures)
@@ -3480,7 +3514,8 @@ async function generateRegionData(regionX, regionZ) {
         generatedRegionCache.set(key, generated)
         trimGeneratedRegionCache(key)
         return generated
-    })()
+    })
+    regionGenerationQueue = pending.catch(() => undefined)
 
     regionGenerationPromises.set(key, pending)
     try {
@@ -3788,15 +3823,17 @@ engine.runRenderLoop(() => {
     const dt = (now - previousTime) / 1000
     previousTime = now
 
-    if (!mainMenuOpen && !settingsOpen && !worldTransitioning) {
-        updatePlayer(dt)
-        updateWaterPhysics(dt)
-        updateUnderwaterAtmosphere(dt)
-        streamToRegion()
+    if (!regionGenerationStageActive && !worldTransitioning) {
+        if (!mainMenuOpen && !settingsOpen) {
+            updatePlayer(dt)
+            updateWaterPhysics(dt)
+            updateUnderwaterAtmosphere(dt)
+            streamToRegion()
+        }
+        updateChunkLoading()
+        processChunkBuildQueue()
+        processDirtyWaterChunks()
     }
-    updateChunkLoading()
-    processChunkBuildQueue()
-    processDirtyWaterChunks()
     scene.render()
 })
 
