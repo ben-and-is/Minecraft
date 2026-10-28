@@ -412,8 +412,10 @@ let flowingWater = new Map()
 let settingsOpen = false
 let settingsReturnToMenu = false
 let regionGenerationPromises = new Map()
+let chunkBuildBusy = false
 let dirtyWaterChunks = new Set()
 let waterPhysicsAccumulator = 0
+let waterPhysicsCursor = 0
 let chunkLoadStatusActive = false
 let decorationBuffersByChunk = new Map()
 let lastChunkCenterX = -1
@@ -1594,8 +1596,9 @@ function simulateWaterCell(cell, state) {
             return
         }
         if (isWaterBlock(below)) {
-            // Water joins the pool below. Do not keep a duplicate floating block.
-            consumeIntoExistingWater(x, y, z)
+            // Water landing on an existing pool joins its surface and becomes stable.
+            // Keep the voxel: consuming it here made streams vanish at lake surfaces.
+            flowingWater.delete(cell)
             return
         }
     }
@@ -1661,7 +1664,16 @@ function updateWaterPhysics(dt) {
     waterPhysicsAccumulator -= stepCount * WATER_STEP_INTERVAL
 
     for (let step = 0; step < stepCount; step++) {
-        const batch = Array.from(flowingWater.keys()).slice(0, WATER_CELLS_PER_STEP)
+        const activeCells = Array.from(flowingWater.keys())
+        if (!activeCells.length) {
+            waterPhysicsCursor = 0
+            break
+        }
+        const count = Math.min(WATER_CELLS_PER_STEP, activeCells.length)
+        const start = waterPhysicsCursor % activeCells.length
+        const batch = new Array(count)
+        for (let i = 0; i < count; i++) batch[i] = activeCells[(start + i) % activeCells.length]
+        waterPhysicsCursor = (start + count) % activeCells.length
         for (const cell of batch) {
             const state = flowingWater.get(cell)
             if (!state) continue
@@ -1670,24 +1682,40 @@ function updateWaterPhysics(dt) {
     }
 }
 
-function processDirtyWaterChunks() {
-    const batch = Array.from(dirtyWaterChunks).slice(0, 2)
-    for (const key of batch) {
-        dirtyWaterChunks.delete(key)
-        if (!desiredChunkKeys.has(key) || !chunkMeshes.has(key)) continue
+async function processDirtyWaterChunks() {
+    if (chunkBuildBusy || worldTransitioning || settingsOpen || !dirtyWaterChunks.size) return
+    const key = dirtyWaterChunks.values().next().value
+    dirtyWaterChunks.delete(key)
+    if (!desiredChunkKeys.has(key) || !chunkMeshes.has(key)) return
 
-        const [cx, cz] = key.split(',').map(Number)
-        const previous = chunkMeshes.get(key)
-        const replacement = buildChunk(cx, cz)
-        chunkMeshes.set(key, replacement)
-
-        for (const mesh of previous) {
-            mesh.dispose()
-            const index = meshes.indexOf(mesh)
-            if (index >= 0) meshes.splice(index, 1)
+    const previous = chunkMeshes.get(key)
+    const [cx, cz] = key.split(',').map(Number)
+    chunkBuildBusy = true
+    try {
+        const replacement = await buildChunk(cx, cz)
+        if (!replacement) return
+        if (desiredChunkKeys.has(key) && chunkMeshes.get(key) === previous) {
+            chunkMeshes.set(key, replacement)
+            for (const mesh of previous) {
+                mesh.dispose()
+                const index = meshes.indexOf(mesh)
+                if (index >= 0) meshes.splice(index, 1)
+            }
+        } else {
+            for (const mesh of replacement) {
+                mesh.dispose()
+                const index = meshes.indexOf(mesh)
+                if (index >= 0) meshes.splice(index, 1)
+            }
         }
+    } catch (error) {
+        if (desiredChunkKeys.has(key)) dirtyWaterChunks.add(key)
+        console.error('Could not rebuild water-updated chunk ' + key, error)
+    } finally {
+        chunkBuildBusy = false
     }
 }
+
 
 function carveSurfaceFissures() {
     const seaLevel = oceans[0].level
@@ -2336,8 +2364,8 @@ function addTrees() {
     }
 }
 
-function addGroundDecorations() {
-    const decorationBuffersByChunk = new Map()
+function addGroundDecorations(chunkFilter = null) {
+    const decorationBuffersByChunk = chunkFilter?.buffers || new Map()
     let grassBuffer = null
     let flowerBuffer = null
     let mushroomBuffer = null
@@ -2535,8 +2563,12 @@ function addGroundDecorations() {
         }
     }
 
-    for (let x = 1; x < N - 1; x++) {
-        for (let z = 1; z < N - 1; z++) {
+    const minX = chunkFilter ? Math.max(1, chunkFilter.cx * CS) : 1
+    const maxX = chunkFilter ? Math.min(N - 1, (chunkFilter.cx + 1) * CS) : N - 1
+    const minZ = chunkFilter ? Math.max(1, chunkFilter.cz * CS) : 1
+    const maxZ = chunkFilter ? Math.min(N - 1, (chunkFilter.cz + 1) * CS) : N - 1
+    for (let x = minX; x < maxX; x++) {
+        for (let z = minZ; z < maxZ; z++) {
             const col = ci(x, z)
             if (isInsideStructureFootprint(x, z)) continue
             if (heights[col] <= waterLevels[col]) continue
@@ -2607,13 +2639,34 @@ function createBufferedMesh(name, data, material, chunkList, isWater = false, of
     chunkList.push(mesh)
 }
 
-function buildChunk(cx, cz) {
+function getChunkDecorationBuffers(data, chunkX, chunkZ) {
+    const key = chunkX + ',' + chunkZ
+    const cached = data.decorationBuffersByChunk.get(key)
+    if (cached) return cached
+
+    // Build only this chunk's plant details, using the region's terrain context.
+    const live = captureRegionGlobals()
+    try {
+        restoreRegionGlobals(data)
+        addGroundDecorations({
+            cx: chunkX,
+            cz: chunkZ,
+            buffers: data.decorationBuffersByChunk
+        })
+        return data.decorationBuffersByChunk.get(key) || null
+    } finally {
+        restoreRegionGlobals(live)
+    }
+}
+
+async function buildChunk(cx, cz) {
     const key = cx + ',' + cz
     const regionX = Math.floor(cx / CHUNKS_PER_AXIS)
     const regionZ = Math.floor(cz / CHUNKS_PER_AXIS)
     const localCX = cx - regionX * CHUNKS_PER_AXIS
     const localCZ = cz - regionZ * CHUNKS_PER_AXIS
-    const data = getRegionData(regionX, regionZ)
+    const data = await getRegionData(regionX, regionZ)
+    if (!desiredChunkKeys.has(key)) return null
     const chunkList = []
     const groups = Array.from({ length: MCOUNT }, () => ({
         p: [], n: [], u: [], c: [], i: []
@@ -2682,7 +2735,7 @@ function buildChunk(cx, cz) {
     }
 
     const localKey = localCX + ',' + localCZ
-    const decorationBuffers = data.decorationBuffersByChunk.get(localKey)
+    const decorationBuffers = getChunkDecorationBuffers(data, localCX, localCZ)
     if (decorationBuffers) {
         createBufferedMesh('grass_details_' + key, decorationBuffers.grass, decorationMaterials[0], chunkList, false, offsetX, offsetZ)
         createBufferedMesh('flower_details_' + key, decorationBuffers.flower, decorationMaterials[1], chunkList, false, offsetX, offsetZ)
@@ -2690,6 +2743,7 @@ function buildChunk(cx, cz) {
     }
     return chunkList
 }
+
 
 
 function unloadChunk(key) {
@@ -2731,28 +2785,55 @@ function updateChunkLoading(force = false) {
     lastChunkCenterZ = centerZ
 }
 
-function processChunkBuildQueue() {
-    let built = 0
-    while (pendingChunkQueue.length && built < MAX_CHUNK_BUILDS_PER_FRAME &&
-           chunkMeshes.size < MAX_LOADED_CHUNKS) {
-        const chunk = pendingChunkQueue.shift()
-        if (!desiredChunkKeys.has(chunk.key) || chunkMeshes.has(chunk.key)) continue
-        chunkMeshes.set(chunk.key, buildChunk(chunk.cx, chunk.cz))
-        built++
+async function processChunkBuildQueue() {
+    if (chunkBuildBusy || worldTransitioning || settingsOpen) return
+
+    let chunk = null
+    while (pendingChunkQueue.length && !chunk) {
+        const candidate = pendingChunkQueue.shift()
+        if (desiredChunkKeys.has(candidate.key) && !chunkMeshes.has(candidate.key)) {
+            chunk = candidate
+        }
     }
 
-    if (pendingChunkQueue.length > 0) {
-        chunkLoadStatusActive = true
-        status.textContent = 'Seed: ' + seed + '. Rendering nearby chunks: ' +
-            chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
-    } else if (chunkLoadStatusActive) {
-        chunkLoadStatusActive = false
-        status.textContent = creativeFlying
-            ? 'Creative flight ON. Space: rise, C: descend, horizontal speed x2.'
-            : mouseLocked
-                ? 'Mouse captured. Press Esc to release.'
-                : 'World ready. Seed: ' + seed + '. Chunks: ' + chunkMeshes.size +
-                    '/' + MAX_LOADED_CHUNKS + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
+    if (!chunk) {
+        if (chunkLoadStatusActive) {
+            chunkLoadStatusActive = false
+            status.textContent = creativeFlying
+                ? 'Creative flight ON. Space: rise, C: descend, horizontal speed x2.'
+                : mouseLocked
+                    ? 'Mouse captured. Press Esc to release.'
+                    : 'World ready. Seed: ' + seed + '. Chunks: ' + chunkMeshes.size +
+                        '/' + MAX_LOADED_CHUNKS + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
+        }
+        return
+    }
+
+    chunkBuildBusy = true
+    chunkLoadStatusActive = true
+    status.textContent = 'Seed: ' + seed + '. Loading nearby chunks: ' +
+        chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
+
+    try {
+        const builtMeshes = await buildChunk(chunk.cx, chunk.cz)
+        if (builtMeshes && desiredChunkKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
+            chunkMeshes.set(chunk.key, builtMeshes)
+        } else if (builtMeshes) {
+            for (const mesh of builtMeshes) {
+                mesh.dispose()
+                const index = meshes.indexOf(mesh)
+                if (index >= 0) meshes.splice(index, 1)
+            }
+        }
+    } catch (error) {
+        if (desiredChunkKeys.has(chunk.key) &&
+            !pendingChunkQueue.some(item => item.key === chunk.key)) {
+            pendingChunkQueue.unshift(chunk)
+        }
+        console.error('Could not build chunk ' + chunk.key, error)
+        status.textContent = 'Loading chunk ' + chunk.key + ' will retry. ' + error.message
+    } finally {
+        chunkBuildBusy = false
     }
 }
 
@@ -3266,7 +3347,7 @@ function captureRegionGlobals() {
         structureFootprints, ponds, oceans, mountains, islands, deserts,
         oceanRifts, surfaceFissures, hillFeatures, plains, voxelEdits,
         trackVoxelEdits, flowingWater, dirtyWaterChunks, waterPhysicsAccumulator,
-        decorationBuffersByChunk
+        waterPhysicsCursor, decorationBuffersByChunk
     }
 }
 
@@ -3292,6 +3373,7 @@ function restoreRegionGlobals(state) {
     flowingWater = state.flowingWater
     dirtyWaterChunks = state.dirtyWaterChunks
     waterPhysicsAccumulator = state.waterPhysicsAccumulator
+    waterPhysicsCursor = state.waterPhysicsCursor || 0
     decorationBuffersByChunk = state.decorationBuffersByChunk
 }
 
@@ -3326,7 +3408,7 @@ function trimGeneratedRegionCache(protectedKey = null) {
     }
 }
 
-function generateRegionData(regionX, regionZ) {
+async function generateRegionData(regionX, regionZ) {
     const key = regionX + ',' + regionZ
     if (generatedRegionCache.has(key)) {
         const cached = generatedRegionCache.get(key)
@@ -3334,65 +3416,97 @@ function generateRegionData(regionX, regionZ) {
         generatedRegionCache.set(key, cached)
         return cached
     }
+    if (regionGenerationPromises.has(key)) return regionGenerationPromises.get(key)
 
-    const previous = captureRegionGlobals()
-    let generated = null
-    try {
-        worldRegionX = regionX
-        worldRegionZ = regionZ
-        seed = seedForRegion(regionX, regionZ)
-        voxels = new Int8Array(N * N * H)
-        heights = new Int16Array(N * N)
-        waterLevels = new Int8Array(N * N)
-        structureFootprints = []
-        ponds = []
-        oceans = []
-        mountains = []
-        islands = []
-        deserts = []
-        oceanRifts = []
-        surfaceFissures = []
-        hillFeatures = []
-        plains = []
-        voxelEdits = new Map()
-        trackVoxelEdits = false
-        flowingWater = new Map()
-        dirtyWaterChunks = new Set()
-        waterPhysicsAccumulator = 0
-        decorationBuffersByChunk = new Map()
-        voxels.fill(EMPTY)
-        heights.fill(0)
-        waterLevels.fill(EMPTY)
+    const epoch = worldGenerationEpoch
+    const pending = (async () => {
+        let work = {
+            ...captureRegionGlobals(),
+            worldRegionX: regionX,
+            worldRegionZ: regionZ,
+            seed: seedForRegion(regionX, regionZ),
+            voxels: new Int8Array(N * N * H),
+            heights: new Int16Array(N * N),
+            waterLevels: new Int8Array(N * N),
+            structureFootprints: [],
+            ponds: [],
+            oceans: [],
+            mountains: [],
+            islands: [],
+            deserts: [],
+            oceanRifts: [],
+            surfaceFissures: [],
+            hillFeatures: [],
+            plains: [],
+            voxelEdits: new Map(),
+            trackVoxelEdits: false,
+            flowingWater: new Map(),
+            dirtyWaterChunks: new Set(),
+            waterPhysicsAccumulator: 0,
+            waterPhysicsCursor: 0,
+            decorationBuffersByChunk: new Map()
+        }
+        work.voxels.fill(EMPTY)
+        work.heights.fill(0)
+        work.waterLevels.fill(EMPTY)
 
-        // Preserve the existing island, biome, river, pond, mountain, and vegetation pipeline.
-        createWorldFeatures()
-        createHeightMap()
-        applyOceanRiftsToHeightMap()
-        createOceans()
-        createPonds()
-        createRiverChannels()
-        voxelize()
-        carveSurfaceFissures()
-        carveMountainCaves()
-        addTrees()
-        pruneFloatingArtifacts()
-        pruneFloatingWater()
-        restoreRegionState(regionStateCache.get(key) || null)
-        flowWaterDownhill()
-        trackVoxelEdits = true
-        decorationBuffersByChunk = addGroundDecorations()
+        async function runStage(action) {
+            if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
+            const live = captureRegionGlobals()
+            try {
+                restoreRegionGlobals(work)
+                action()
+                work = captureRegionGlobals()
+            } finally {
+                restoreRegionGlobals(live)
+            }
+            // Yield between expensive generation passes, so the render loop can keep
+            // drawing already-loaded chunks while the next region is prepared.
+            await new Promise(resolve => setTimeout(resolve, 0))
+        }
 
-        generated = Object.assign(captureRegionGlobals(), {
-            regionX,
-            regionZ,
-            trackVoxelEdits: true
+        await runStage(createWorldFeatures)
+        await runStage(createHeightMap)
+        await runStage(applyOceanRiftsToHeightMap)
+        await runStage(createOceans)
+        await runStage(createPonds)
+        await runStage(createRiverChannels)
+        await runStage(voxelize)
+        await runStage(carveSurfaceFissures)
+        await runStage(carveMountainCaves)
+        await runStage(addTrees)
+        await runStage(pruneFloatingArtifacts)
+        await runStage(pruneFloatingWater)
+        await runStage(() => restoreRegionState(regionStateCache.get(key) || null))
+        await runStage(() => {
+            flowWaterDownhill()
+            trackVoxelEdits = true
         })
+
+        if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
+        const live = captureRegionGlobals()
+        let generated
+        try {
+            restoreRegionGlobals(work)
+            generated = Object.assign(captureRegionGlobals(), {
+                regionX,
+                regionZ,
+                trackVoxelEdits: true
+            })
+        } finally {
+            restoreRegionGlobals(live)
+        }
         generatedRegionCache.set(key, generated)
+        trimGeneratedRegionCache(key)
+        return generated
+    })()
+
+    regionGenerationPromises.set(key, pending)
+    try {
+        return await pending
     } finally {
-        restoreRegionGlobals(previous)
+        if (regionGenerationPromises.get(key) === pending) regionGenerationPromises.delete(key)
     }
-    trimGeneratedRegionCache(key)
-    return generated
 }
 
 function getRegionData(regionX, regionZ) {
@@ -3420,6 +3534,7 @@ function activateRegionData(data) {
     trackVoxelEdits = true
     flowingWater = data.flowingWater
     waterPhysicsAccumulator = data.waterPhysicsAccumulator
+    waterPhysicsCursor = data.waterPhysicsCursor || 0
     decorationBuffersByChunk = data.decorationBuffersByChunk
     currentRegionData = data
 }
@@ -3438,15 +3553,15 @@ function shiftLoadedMeshes(regionDeltaX, regionDeltaZ) {
     }
 }
 
-function streamToRegion() {
-    if (mainMenuOpen || worldTransitioning) return
+async function streamToRegion() {
+    if (mainMenuOpen || settingsOpen || worldTransitioning) return
+
     let nextRegionX = worldRegionX
     let nextRegionZ = worldRegionZ
     let nextX = playerX
     let nextZ = playerZ
     let changed = false
 
-    // Shift the region origin by one full width, keeping movement continuous.
     if (playerX < 0) {
         nextRegionX--
         nextX = playerX + N
@@ -3467,23 +3582,35 @@ function streamToRegion() {
     }
     if (!changed) return
 
+    const epoch = worldGenerationEpoch
     const oldRegionX = worldRegionX
     const oldRegionZ = worldRegionZ
-    saveCurrentRegionState()
-    const nextData = getRegionData(nextRegionX, nextRegionZ)
+    worldTransitioning = true
+    try {
+        saveCurrentRegionState()
+        status.textContent = 'Preparing nearby terrain…'
+        const nextData = await getRegionData(nextRegionX, nextRegionZ)
+        if (epoch !== worldGenerationEpoch) return
 
-    worldRegionX = nextRegionX
-    worldRegionZ = nextRegionZ
-    activateRegionData(nextData)
-    shiftLoadedMeshes(nextRegionX - oldRegionX, nextRegionZ - oldRegionZ)
-    playerX = nextX
-    playerZ = nextZ
-    syncCamera()
-    updateChunkLoading(true)
-    worldTransitioning = false
+        activateRegionData(nextData)
+        shiftLoadedMeshes(nextRegionX - oldRegionX, nextRegionZ - oldRegionZ)
+        playerX = nextX
+        playerZ = nextZ
+        syncCamera()
+        updateChunkLoading(true)
+    } catch (error) {
+        if (epoch === worldGenerationEpoch) {
+            console.error('Could not load adjacent region', error)
+            status.textContent = 'Adjacent region failed to load: ' + error.message
+        }
+    } finally {
+        if (epoch === worldGenerationEpoch) worldTransitioning = false
+    }
 }
-
-function generate() {
+async function generate() {
+    const epoch = ++worldGenerationEpoch
+    regionGenerationPromises.clear()
+    worldTransitioning = true
     for (const mesh of meshes) mesh.dispose()
     meshes = []
     chunkMeshes.clear()
@@ -3491,6 +3618,7 @@ function generate() {
     pendingChunkQueue = []
     dirtyWaterChunks = new Set()
     chunkLoadStatusActive = true
+    chunkBuildBusy = false
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
     generatedRegionCache.clear()
@@ -3500,48 +3628,59 @@ function generate() {
 
     seed = Math.floor(Math.random() * 2147483646) + 1
     worldSeedBase = seed
-    const initialRegion = getRegionData(0, 0)
-    activateRegionData(initialRegion)
+    status.textContent = 'Generating terrain in the background…'
+    try {
+        const initialRegion = await getRegionData(0, 0)
+        if (epoch !== worldGenerationEpoch) return
+        activateRegionData(initialRegion)
 
-    let found = false
-    for (let radius = 0; radius < N / 2 && !found; radius++) {
-        for (let x = Math.max(2, Math.floor(N / 2 - radius));
-            x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
-            for (let z = Math.max(2, Math.floor(N / 2 - radius));
-                z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
-                if (heights[ci(x, z)] <= oceans[0].level) continue
-                const floor = findGround(x + 0.5, z + 0.5)
-                if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
-                if (canOccupy(x + 0.5, z + 0.5, floor)) {
-                    playerX = x + 0.5
-                    playerZ = z + 0.5
-                    feetY = floor
-                    found = true
-                    break
+        let found = false
+        for (let radius = 0; radius < N / 2 && !found; radius++) {
+            for (let x = Math.max(2, Math.floor(N / 2 - radius));
+                x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
+                for (let z = Math.max(2, Math.floor(N / 2 - radius));
+                    z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
+                    if (heights[ci(x, z)] <= oceans[0].level) continue
+                    const floor = findGround(x + 0.5, z + 0.5)
+                    if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
+                    if (canOccupy(x + 0.5, z + 0.5, floor)) {
+                        playerX = x + 0.5
+                        playerZ = z + 0.5
+                        feetY = floor
+                        found = true
+                        break
+                    }
                 }
             }
         }
-    }
-    if (!found) {
-        playerX = N / 2
-        playerZ = N / 2
-        feetY = findGround(playerX, playerZ)
-    }
+        if (!found) {
+            playerX = N / 2
+            playerZ = N / 2
+            feetY = findGround(playerX, playerZ)
+        }
 
-    verticalVelocity = 0
-    cameraEyeHeight = EYE_HEIGHT
-    horizontalVelocityX = 0
-    horizontalVelocityZ = 0
-    grounded = true
-    jumpQueued = false
-    creativeFlying = false
-    lastSpaceTapTime = 0
-    autoStep = null
-    yaw = 0
-    pitch = 0
-    syncCamera()
-    updateChunkLoading(true)
-    status.textContent = 'Infinite world seed: ' + seed + '. Streaming nearby chunks…'
+        verticalVelocity = 0
+        cameraEyeHeight = EYE_HEIGHT
+        horizontalVelocityX = 0
+        horizontalVelocityZ = 0
+        grounded = true
+        jumpQueued = false
+        creativeFlying = false
+        lastSpaceTapTime = 0
+        autoStep = null
+        yaw = 0
+        pitch = 0
+        syncCamera()
+        updateChunkLoading(true)
+        status.textContent = 'Infinite world seed: ' + seed + '. Loading chunks in radius ' + CHUNK_RENDER_RADIUS + '…'
+    } catch (error) {
+        if (epoch === worldGenerationEpoch) {
+            console.error('World generation failed', error)
+            status.textContent = 'World generation failed: ' + error.message
+        }
+    } finally {
+        if (epoch === worldGenerationEpoch) worldTransitioning = false
+    }
 }
 window.addEventListener('keydown', e => {
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
