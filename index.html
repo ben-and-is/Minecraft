@@ -229,12 +229,11 @@
             <select id="fontFamily">
                 <option value="sans-serif">Sans-serif (default)</option>
                 <option value="monospace">Monospace</option>
-                <option value="serif">Serif</option>
-                <option value="cursive">Cursive / Comic style</option>
-                <option value="fantasy">Fantasy</option>
-                <option value="webdings">Webdings / Wingdings 😈 (if installed)</option>
+                <option value="old-english">Old English Text MT</option>
+                <option value="webdings">Webdings 😈 (if installed)</option>
+                <option value="sha256">SHA-256 / sans-serif fallback</option>
             </select>
-            <p class="settings-note">Some decorative fonts only exist on certain devices. If a font is unavailable, your browser will use a fallback.</p>
+            <p class="settings-note">Old English Text MT and Webdings depend on fonts installed on your device. SHA-256 is a hash algorithm, not a standard font, so this option tries a local “SHA256” font and falls back to sans-serif.</p>
             <div class="menu-actions">
                 <button id="settingsDoneBtn" type="button">Done</button>
             </div>
@@ -258,9 +257,17 @@ scene.collisionsEnabled = false
 const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_LOG = 8, PALM_LEAVES = 9, PINE_LOG = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
-const MAX_CHUNK_BUILDS_PER_FRAME = 3
-const MAX_LOADED_CHUNKS = 400
 const CHUNK_RENDER_RADIUS = 5
+const MAX_CHUNK_BUILDS_PER_FRAME = 1
+const MAX_LOADED_CHUNKS = (() => {
+    let count = 0
+    for (let dz = -CHUNK_RENDER_RADIUS; dz <= CHUNK_RENDER_RADIUS; dz++) {
+        for (let dx = -CHUNK_RENDER_RADIUS; dx <= CHUNK_RENDER_RADIUS; dx++) {
+            if (dx * dx + dz * dz <= CHUNK_RENDER_RADIUS * CHUNK_RENDER_RADIUS) count++
+        }
+    }
+    return count
+})()
 const CHUNKS_PER_AXIS = Math.ceil(N / CS)
 const MAX_CACHED_REGION_DATA = 4
 
@@ -402,12 +409,9 @@ let currentRegionData = null
 let voxelEdits = new Map()
 let trackVoxelEdits = false
 let flowingWater = new Map()
-let waterMovementInProgress = false
 let settingsOpen = false
 let settingsReturnToMenu = false
-let waterfallStreams = new Map()
-let waterfallSourceKeys = new Set()
-let nextWaterfallStreamId = 1
+let regionGenerationPromises = new Map()
 let dirtyWaterChunks = new Set()
 let waterPhysicsAccumulator = 0
 let chunkLoadStatusActive = false
@@ -502,9 +506,7 @@ function set(x, y, z, t) {
             voxelEdits.set(cell, t)
             const openedOrFlooded = (previous === EMPTY) !== (t === EMPTY) ||
                 isWaterBlock(previous) !== isWaterBlock(t)
-            if (openedOrFlooded) {
-                wakeAdjacentWaterCells(x, y, z, waterMovementInProgress ? 1 : 3)
-            }
+            if (openedOrFlooded) wakeAdjacentWaterCells(x, y, z, 3, true)
         }
     }
 }
@@ -1191,16 +1193,22 @@ function createPonds() {
             pond.level = clamp(Math.round(best.landHeight - basinDepth), 3, H - 12)
         }
 
-        const margin = (pond.warp || 0) + 3
-        const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.55 - margin))
-        const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.55 + margin))
-        const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.55 - margin))
-        const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.55 + margin))
+        const margin = (pond.warp || 0) + 4
+        const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.72 - margin))
+        const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.72 + margin))
+        const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.72 - margin))
+        const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.72 + margin))
 
         for (let x = x0; x <= x1; x++) {
             for (let z = z0; z <= z1; z++) {
-                const edge = irregularDistance(x, z, pond)
-                if (edge > 1.38) continue
+                const baseEdge = irregularDistance(x, z, pond)
+                const broadShoreNoise =
+                    (noise(x * 0.045 + pond.x * 0.19, z * 0.045 + pond.z * 0.19) - 0.5) * 0.24
+                const fineShoreNoise =
+                    (noise(x * 0.13 + pond.z * 0.11 + 5.7,
+                        z * 0.13 + pond.x * 0.11 + 9.2) - 0.5) * 0.10
+                const edge = baseEdge + broadShoreNoise + fineShoreNoise
+                if (edge > 1.68) continue
 
                 const col = ci(x, z)
                 const originalHeight = heights[col]
@@ -1213,47 +1221,24 @@ function createPonds() {
                     heights[col] = Math.min(originalHeight, Math.max(1, pond.level - depth))
                     waterLevels[col] = pond.level
                 } else if (originalHeight > seaLevel && originalHeight > pond.level) {
-                    const t = clamp((edge - 1) / 0.38, 0, 1)
+                    // Blend over a broader, noisy shoreline. The terrain is only lowered;
+                    // small undulations make the bank look eroded rather than constructed.
+                    const t = clamp((edge - 0.88) / 0.80, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
-                    const target = Math.round(pond.level + (originalHeight - pond.level) * smooth)
+                    const bankUndulation = (noise(
+                        x * 0.085 + pond.x * 0.17 + 4.1,
+                        z * 0.085 + pond.z * 0.17 + 8.3
+                    ) - 0.5) * 1.4 * Math.sin(Math.PI * t)
+                    const target = Math.round(
+                        pond.level + (originalHeight - pond.level) * smooth + bankUndulation
+                    )
                     heights[col] = Math.max(seaLevel + 1, Math.min(originalHeight, target))
                 }
             }
         }
 
-        // Form a rough, cliff-backed cup around elevated freshwater. The inner lip
-        // stays above the water surface; a noisy outer slope breaks the perfect-ring look.
-        // createRiverChannels() runs afterward and can still cut natural spillways out.
-        if (!pond.disabled && pond.level > seaLevel + 1) {
-            const bankMargin = (pond.warp || 0) + 5
-            const bankX0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.70 - bankMargin))
-            const bankX1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.70 + bankMargin))
-            const bankZ0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.70 - bankMargin))
-            const bankZ1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.70 + bankMargin))
-            for (let x = bankX0; x <= bankX1; x++) {
-                for (let z = bankZ0; z <= bankZ1; z++) {
-                    const edge = irregularDistance(x, z, pond)
-                    const roughness = noise(
-                        x * 0.061 + pond.x * 0.17,
-                        z * 0.061 + pond.z * 0.17
-                    )
-                    const outerEdge = 1.52 + (roughness - 0.5) * 0.16
-                    if (edge <= 0.98 || edge > outerEdge) continue
-                    const shoreT = clamp((edge - 0.98) / (outerEdge - 0.98), 0, 1)
-                    const jaggedLip = (noise(
-                        x * 0.13 + pond.z * 0.09 + 7.3,
-                        z * 0.13 + pond.x * 0.09 + 3.1
-                    ) - 0.5) * 2.2
-                    const cliffRise = 2.4 + (1 - shoreT) * 1.8 + jaggedLip
-                    const bankLevel = Math.min(
-                        H - 7,
-                        Math.round(pond.level + Math.max(1.5, cliffRise))
-                    )
-                    const col = ci(x, z)
-                    heights[col] = Math.max(heights[col], bankLevel)
-                }
-            }
-        }
+        // No raised ring or retaining wall: shore shape comes from terrain carving
+        // and a broad irregular blend into the naturally generated surrounding land.
     }
 }
 
@@ -1414,10 +1399,9 @@ function markWaterChunkDirty(x, z) {
     }
 }
 
-function wakeAdjacentWaterCells(x, y, z, radius = 1) {
-    // Geometry edits wake all nearby water across the horizontal detection radius.
-    // Include water one level above/below the changed block, as open routes may
-    // be diagonal in 3D (e.g. mining the floor beside a water block).
+function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
+    // Mining wakes cells throughout three blocks; normal fluid movement wakes
+    // only adjacent water and preserves the neighbour's horizontal travel budget.
     for (let dx = -radius; dx <= radius; dx++) {
         for (let dz = -radius; dz <= radius; dz++) {
             if (Math.abs(dx) + Math.abs(dz) > radius) continue
@@ -1429,8 +1413,7 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1) {
                 const cell = idx(nx, ny, nz)
                 const state = flowingWater.get(cell)
                 if (state) {
-                    // Terrain edits can reveal a new route even after the horizontal limit.
-                    state.horizontalSteps = 0
+                    if (resetReach) state.horizontalSteps = 0
                     state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
                     state.falling = false
                 } else {
@@ -1446,25 +1429,39 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1) {
 }
 
 function pruneFloatingWater() {
-    // Post-carving cleanup: any unsupported water is removed at generation time.
+    // Water is voxelized only above the column terrain and below its water level.
+    // Limit the cleanup scan to these candidate cells rather than all world voxels.
     let removed = 0
-    for (let y = 1; y < H; y++) {
-        for (let x = 1; x < N - 1; x++) {
-            for (let z = 1; z < N - 1; z++) {
-                if (!isWaterBlock(get(x, y, z))) continue
-                if (get(x, y - 1, z) !== EMPTY) continue
-                set(x, y, z, EMPTY)
-                removed++
+    for (let x = 1; x < N - 1; x++) {
+        for (let z = 1; z < N - 1; z++) {
+            const col = ci(x, z)
+            const firstWaterY = Math.max(1, heights[col] + 1)
+            const lastWaterY = Math.min(H - 1, waterLevels[col])
+            for (let y = firstWaterY; y <= lastWaterY; y++) {
+                if (!isWaterBlock(get(x, y, z)) || get(x, y - 1, z) !== EMPTY) continue
+                for (let removeY = y; removeY <= lastWaterY; removeY++) {
+                    if (!isWaterBlock(get(x, removeY, z))) break
+                    set(x, removeY, z, EMPTY)
+                    removed++
+                }
+                break
             }
         }
     }
     return removed
 }
 
+function setFluidVoxel(x, y, z, type) {
+    // Fluid positions are transient simulation state, not persistent player edits.
+    const tracking = trackVoxelEdits
+    trackVoxelEdits = false
+    try { set(x, y, z, type) } finally { trackVoxelEdits = tracking }
+}
+
 function addFlowWater(x, y, z, horizontalSteps = 0, extraState = {}) {
     if (x < 1 || x >= N - 1 || z < 1 || z >= N - 1 || y < 1 || y >= H) return false
     if (get(x, y, z) !== EMPTY) return false
-    set(x, y, z, FRESH_WATER)
+    setFluidVoxel(x, y, z, FRESH_WATER)
     flowingWater.set(idx(x, y, z), {
         horizontalSteps,
         horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
@@ -1476,15 +1473,8 @@ function addFlowWater(x, y, z, horizontalSteps = 0, extraState = {}) {
 }
 
 function flowWaterDownhill() {
-    // There are no pre-scripted waterfall outlets. Seed exposed freshwater surfaces
-    // into the same finite-flow solver used by all later water movement.
-    waterfallStreams.clear()
-    waterfallSourceKeys.clear()
-    nextWaterfallStreamId = 1
-    for (const [cell, state] of Array.from(flowingWater.entries())) {
-        if (state && state.waterfallId) flowingWater.delete(cell)
-    }
-
+    // Seed exposed freshwater surfaces into the general finite-flow solver.
+    // There are no preset waterfall outlets or suspended stream columns.
     for (let x = 1; x < N - 1; x++) {
         for (let z = 1; z < N - 1; z++) {
             const col = ci(x, z)
@@ -1506,8 +1496,7 @@ function flowWaterDownhill() {
                 flowingWater.set(cell, {
                     horizontalSteps: 0,
                     horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
-                    falling: false,
-                    naturalSource: true
+                    falling: false
                 })
             }
         }
@@ -1557,14 +1546,8 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
     if (get(nx, ny, nz) !== EMPTY) return false
     const oldCell = idx(x, y, z)
     flowingWater.delete(oldCell)
-    const previousMutationState = waterMovementInProgress
-    waterMovementInProgress = true
-    try {
-        set(x, y, z, EMPTY)
-        set(nx, ny, nz, type)
-    } finally {
-        waterMovementInProgress = previousMutationState
-    }
+    setFluidVoxel(x, y, z, EMPTY)
+    setFluidVoxel(nx, ny, nz, type)
 
     const movedDown = ny < y
     const movedHorizontally = nx !== x || nz !== z
@@ -1577,20 +1560,17 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
     })
     markWaterChunkDirty(x, z)
     markWaterChunkDirty(nx, nz)
+    wakeAdjacentWaterCells(x, y, z, 1, false)
+    wakeAdjacentWaterCells(nx, ny, nz, 1, false)
     return true
 }
 
 function consumeIntoExistingWater(x, y, z) {
     const cell = idx(x, y, z)
     flowingWater.delete(cell)
-    const previousMutationState = waterMovementInProgress
-    waterMovementInProgress = true
-    try {
-        set(x, y, z, EMPTY)
-    } finally {
-        waterMovementInProgress = previousMutationState
-    }
+    setFluidVoxel(x, y, z, EMPTY)
     markWaterChunkDirty(x, z)
+    wakeAdjacentWaterCells(x, y, z, 1, false)
 }
 
 function simulateWaterCell(cell, state) {
@@ -3189,25 +3169,9 @@ function regionCacheKey(regionX = worldRegionX, regionZ = worldRegionZ) {
 }
 
 function saveCurrentRegionState() {
-    const streams = Array.from(waterfallStreams.values()).map(stream => ({
-        id: stream.id,
-        x: stream.x,
-        z: stream.z,
-        topY: stream.topY,
-        bottomY: stream.bottomY,
-        sourceX: stream.sourceX,
-        sourceZ: stream.sourceZ,
-        sourceLevel: stream.sourceLevel,
-        sourceKey: stream.sourceKey,
-        pondIndex: ponds.indexOf(stream.pond),
-        drying: !!stream.drying
-    }))
     regionStateCache.set(regionCacheKey(), {
         edits: Array.from(voxelEdits.entries()),
-        flowingWater: Array.from(flowingWater.entries()).map(([cell, state]) => [cell, { ...state }]),
-        waterfallSourceKeys: Array.from(waterfallSourceKeys),
-        waterfallStreams: streams,
-        nextWaterfallStreamId
+        flowingWater: Array.from(flowingWater.entries()).map(([cell, state]) => [cell, { ...state }])
     })
     rememberActiveRegionData()
 }
@@ -3221,16 +3185,6 @@ function restoreRegionState(saved) {
     }
 
     flowingWater = new Map((saved.flowingWater || []).map(([cell, state]) => [cell, { ...state }]))
-    waterfallSourceKeys = new Set(saved.waterfallSourceKeys || [])
-    waterfallStreams = new Map()
-    for (const savedStream of (saved.waterfallStreams || [])) {
-        const pond = ponds[savedStream.pondIndex]
-        if (!pond) continue
-        const stream = { ...savedStream, pond }
-        delete stream.pondIndex
-        waterfallStreams.set(stream.id, stream)
-    }
-    nextWaterfallStreamId = saved.nextWaterfallStreamId || 1
 }
 
 function startNewWorld() {
@@ -3264,11 +3218,10 @@ function hideMainMenu() {
 
 const GAME_FONT_STACKS = {
     "sans-serif": "Arial, Helvetica, sans-serif",
-    "monospace": "Consolas, Monaco, monospace",
-    "serif": "Georgia, 'Times New Roman', serif",
-    "cursive": "'Comic Sans MS', 'Comic Sans', cursive",
-    "fantasy": "Papyrus, fantasy",
-    "webdings": "Webdings, Wingdings, sans-serif"
+    "monospace": "'Courier New', Consolas, monospace",
+    "old-english": "'Old English Text MT', 'UnifrakturCook', 'Blackletter', serif",
+    "webdings": "Webdings, Wingdings, sans-serif",
+    "sha256": "'SHA256', Arial, Helvetica, sans-serif"
 }
 
 function applyGameFont(value) {
@@ -3312,8 +3265,7 @@ function captureRegionGlobals() {
         seed, worldRegionX, worldRegionZ, voxels, heights, waterLevels,
         structureFootprints, ponds, oceans, mountains, islands, deserts,
         oceanRifts, surfaceFissures, hillFeatures, plains, voxelEdits,
-        trackVoxelEdits, flowingWater, waterfallStreams, waterfallSourceKeys,
-        nextWaterfallStreamId, dirtyWaterChunks, waterPhysicsAccumulator,
+        trackVoxelEdits, flowingWater, dirtyWaterChunks, waterPhysicsAccumulator,
         decorationBuffersByChunk
     }
 }
@@ -3338,9 +3290,6 @@ function restoreRegionGlobals(state) {
     voxelEdits = state.voxelEdits
     trackVoxelEdits = state.trackVoxelEdits
     flowingWater = state.flowingWater
-    waterfallStreams = state.waterfallStreams
-    waterfallSourceKeys = state.waterfallSourceKeys
-    nextWaterfallStreamId = state.nextWaterfallStreamId
     dirtyWaterChunks = state.dirtyWaterChunks
     waterPhysicsAccumulator = state.waterPhysicsAccumulator
     decorationBuffersByChunk = state.decorationBuffersByChunk
@@ -3408,9 +3357,6 @@ function generateRegionData(regionX, regionZ) {
         voxelEdits = new Map()
         trackVoxelEdits = false
         flowingWater = new Map()
-        waterfallStreams = new Map()
-        waterfallSourceKeys = new Set()
-        nextWaterfallStreamId = 1
         dirtyWaterChunks = new Set()
         waterPhysicsAccumulator = 0
         decorationBuffersByChunk = new Map()
@@ -3473,9 +3419,6 @@ function activateRegionData(data) {
     voxelEdits = data.voxelEdits
     trackVoxelEdits = true
     flowingWater = data.flowingWater
-    waterfallStreams = data.waterfallStreams
-    waterfallSourceKeys = data.waterfallSourceKeys
-    nextWaterfallStreamId = data.nextWaterfallStreamId
     waterPhysicsAccumulator = data.waterPhysicsAccumulator
     decorationBuffersByChunk = data.decorationBuffersByChunk
     currentRegionData = data
