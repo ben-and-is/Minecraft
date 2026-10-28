@@ -231,9 +231,9 @@
                 <option value="monospace">Monospace</option>
                 <option value="old-english">Old English Text MT</option>
                 <option value="webdings">Webdings 😈 (if installed)</option>
-                <option value="sha256">SHA-256 / sans-serif fallback</option>
+                <option value="sha256">SHA-256 hash display</option>
             </select>
-            <p class="settings-note">Old English Text MT and Webdings depend on fonts installed on your device. SHA-256 is a hash algorithm, not a standard font, so this option tries a local “SHA256” font and falls back to sans-serif.</p>
+            <p class="settings-note">Old English Text MT and Webdings depend on fonts installed on your device. SHA-256 is a one-way hash, not encryption or a font. This mode replaces in-game information text with SHA-256 digests shown in sans-serif; action buttons stay readable. Select Sans-serif to restore the original text.</p>
             <div class="menu-actions">
                 <button id="settingsDoneBtn" type="button">Done</button>
             </div>
@@ -413,6 +413,7 @@ let settingsOpen = false
 let settingsReturnToMenu = false
 let regionGenerationPromises = new Map()
 let regionGenerationQueue = Promise.resolve()
+let activeGenerationBounds = null
 let regionGenerationStageActive = false
 let activeRegionStageEpoch = -1
 let worldGenerationEpoch = 0
@@ -483,6 +484,9 @@ let previousTime = performance.now()
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const ci = (x, z) => z * N + x
 const idx = (x, y, z) => (y * N + z) * N + x
+function getActiveGenerationBounds() {
+    return activeGenerationBounds || { x0: 0, x1: N, z0: 0, z1: N }
+}
 async function yieldToBrowser() {
     await new Promise(resolve => setTimeout(resolve, 0))
     if (regionGenerationStageActive && activeRegionStageEpoch !== worldGenerationEpoch) {
@@ -1089,11 +1093,12 @@ function terrainHeight(x, z) {
 
 async function applyOceanRiftsToHeightMap() {
     const seaLevel = oceans.length ? oceans[0].level : 12
+    const bounds = getActiveGenerationBounds()
     for (const rift of oceanRifts) {
-        const minX = Math.max(1, Math.floor(Math.min(rift.x, rift.x + Math.cos(rift.angle) * rift.length) - rift.bend - rift.width - 3))
-        const maxX = Math.min(N - 2, Math.ceil(Math.max(rift.x, rift.x + Math.cos(rift.angle) * rift.length) + rift.bend + rift.width + 3))
-        const minZ = Math.max(1, Math.floor(Math.min(rift.z, rift.z + Math.sin(rift.angle) * rift.length) - rift.bend - rift.width - 3))
-        const maxZ = Math.min(N - 2, Math.ceil(Math.max(rift.z, rift.z + Math.sin(rift.angle) * rift.length) + rift.bend + rift.width + 3))
+        const minX = Math.max(1, bounds.x0, Math.floor(Math.min(rift.x, rift.x + Math.cos(rift.angle) * rift.length) - rift.bend - rift.width - 3))
+        const maxX = Math.min(N - 2, bounds.x1 - 1, Math.ceil(Math.max(rift.x, rift.x + Math.cos(rift.angle) * rift.length) + rift.bend + rift.width + 3))
+        const minZ = Math.max(1, bounds.z0, Math.floor(Math.min(rift.z, rift.z + Math.sin(rift.angle) * rift.length) - rift.bend - rift.width - 3))
+        const maxZ = Math.min(N - 2, bounds.z1 - 1, Math.ceil(Math.max(rift.z, rift.z + Math.sin(rift.angle) * rift.length) + rift.bend + rift.width + 3))
         const dirX = Math.cos(rift.angle), dirZ = Math.sin(rift.angle)
         const sideX = -dirZ, sideZ = dirX
 
@@ -1122,8 +1127,9 @@ async function applyOceanRiftsToHeightMap() {
 async function createHeightMap() {
     const seaLevel = oceans.length ? oceans[0].level : 12
     const edgeBlendWidth = 22
-    for (let x = 0; x < N; x++) {
-        for (let z = 0; z < N; z++) {
+    const bounds = getActiveGenerationBounds()
+    for (let x = bounds.x0; x < bounds.x1; x++) {
+        for (let z = bounds.z0; z < bounds.z1; z++) {
             let h = terrainHeight(x, z)
             const edgeDistance = Math.min(x, z, N - 1 - x, N - 1 - z)
             if (edgeDistance < edgeBlendWidth) {
@@ -1139,17 +1145,23 @@ async function createHeightMap() {
 }
 
 function createOceans() {
-    waterLevels.fill(oceans[0].level)
+    const bounds = getActiveGenerationBounds()
+    const seaLevel = oceans[0].level
+    for (let x = bounds.x0; x < bounds.x1; x++) {
+        for (let z = bounds.z0; z < bounds.z1; z++) waterLevels[ci(x, z)] = seaLevel
+    }
 }
 
 async function createPonds() {
     const seaLevel = oceans[0].level
+    const bounds = getActiveGenerationBounds()
 
     for (const pond of ponds) {
-        pond.disabled = false
+        if (pond.disabled) continue
         if (pond.connected && !pond.variableLevel) {
             pond.level = seaLevel
-        } else {
+            pond.resolved = true
+        } else if (!pond.resolved) {
             const originalX = pond.x, originalZ = pond.z
             const isHighland = pond.name === 'Highland Tarn'
             const isLowBasin = pond.name === 'Low Basin'
@@ -1168,7 +1180,7 @@ async function createPonds() {
                     const distance = Math.hypot(dx, dz)
                     if (distance > searchRadius) continue
                     const col = ci(x, z)
-                    const landHeight = heights[col]
+                    const landHeight = terrainHeight(x, z)
                     if (landHeight < minimumLandHeight || islandInfluenceAt(x, z) < 0.72) continue
 
                     const elevationPenalty = isHighland
@@ -1187,6 +1199,7 @@ async function createPonds() {
 
             if (!best) {
                 pond.disabled = true
+                pond.resolved = true
                 continue
             }
 
@@ -1206,13 +1219,43 @@ async function createPonds() {
                     ? 7 + Math.floor(rand(pond.x + 5569, pond.z + 5573) * 7)
                     : 3 + Math.floor(rand(pond.x + 5579, pond.z + 5581) * 8)
             pond.level = clamp(Math.round(best.landHeight - basinDepth), 3, H - 12)
+            pond.resolved = true
+
+            // Ensure there is a continuous natural bank below the waterline.
+            // A basin open directly to low seabed becomes sea-level or is omitted.
+            let lowestBank = Infinity
+            const bankRadiusX = Math.ceil(pond.rx * 2.25 + (pond.warp || 0) + 4)
+            const bankRadiusZ = Math.ceil(pond.rz * 2.25 + (pond.warp || 0) + 4)
+            const bankStartX = Math.max(2, Math.floor(pond.x - bankRadiusX))
+            const bankEndX = Math.min(N - 3, Math.ceil(pond.x + bankRadiusX))
+            const bankStartZ = Math.max(2, Math.floor(pond.z - bankRadiusZ))
+            const bankEndZ = Math.min(N - 3, Math.ceil(pond.z + bankRadiusZ))
+            for (let bx = bankStartX; bx <= bankEndX; bx++) {
+                for (let bz = bankStartZ; bz <= bankEndZ; bz++) {
+                    const rimDistance = irregularDistance(bx, bz, pond)
+                    if (rimDistance < 1.62 || rimDistance > 2.24) continue
+                    lowestBank = Math.min(lowestBank, terrainHeight(bx, bz))
+                }
+                if (((bx - bankStartX) & 7) === 7) await yieldToBrowser()
+            }
+            if (lowestBank <= seaLevel + 1) {
+                if (pond.riverPath) pond.level = seaLevel
+                else {
+                    pond.disabled = true
+                    continue
+                }
+            } else {
+                pond.level = Math.min(pond.level, lowestBank - 1)
+            }
         }
 
+        if (pond.disabled) continue
+
         const margin = (pond.warp || 0) + 4
-        const x0 = Math.max(1, Math.floor(pond.x - pond.rx * 1.72 - margin))
-        const x1 = Math.min(N - 2, Math.ceil(pond.x + pond.rx * 1.72 + margin))
-        const z0 = Math.max(1, Math.floor(pond.z - pond.rz * 1.72 - margin))
-        const z1 = Math.min(N - 2, Math.ceil(pond.z + pond.rz * 1.72 + margin))
+        const x0 = Math.max(1, bounds.x0, Math.floor(pond.x - pond.rx * 1.72 - margin))
+        const x1 = Math.min(N - 2, bounds.x1 - 1, Math.ceil(pond.x + pond.rx * 1.72 + margin))
+        const z0 = Math.max(1, bounds.z0, Math.floor(pond.z - pond.rz * 1.72 - margin))
+        const z1 = Math.min(N - 2, bounds.z1 - 1, Math.ceil(pond.z + pond.rz * 1.72 + margin))
 
         for (let x = x0; x <= x1; x++) {
             for (let z = z0; z <= z1; z++) {
@@ -1244,6 +1287,7 @@ async function createPonds() {
                         (broadFloorVariation + fineFloorVariation) * basinT
                     ))
                     heights[col] = Math.min(originalHeight, Math.max(1, pond.level - depth))
+                    if (heights[col] >= pond.level) heights[col] = Math.max(1, pond.level - 1)
                     waterLevels[col] = pond.level
                 } else if (originalHeight > seaLevel && originalHeight > pond.level) {
                     // Blend over a broader, noisy shoreline. The terrain is only lowered;
@@ -1270,6 +1314,7 @@ async function createPonds() {
 
 async function createRiverChannels() {
     const seaLevel = oceans[0].level
+    const bounds = getActiveGenerationBounds()
 
     for (const pond of ponds) {
         if (!pond.riverPath || pond.riverPath.length < 2 || pond.disabled ||
@@ -1291,10 +1336,10 @@ async function createRiverChannels() {
                 const pz = a.z + (b.z - a.z) * t
                 const width = widthBase +
                     (noise(px * 0.13 + pond.x, pz * 0.13 + pond.z) - 0.5) * 1.1
-                const x0 = Math.max(1, Math.floor(px - width - 3))
-                const x1 = Math.min(N - 2, Math.ceil(px + width + 3))
-                const z0 = Math.max(1, Math.floor(pz - width - 3))
-                const z1 = Math.min(N - 2, Math.ceil(pz + width + 3))
+                const x0 = Math.max(1, bounds.x0, Math.floor(px - width - 3))
+                const x1 = Math.min(N - 2, bounds.x1 - 1, Math.ceil(px + width + 3))
+                const z0 = Math.max(1, bounds.z0, Math.floor(pz - width - 3))
+                const z1 = Math.min(N - 2, bounds.z1 - 1, Math.ceil(pz + width + 3))
 
                 for (let x = x0; x <= x1; x++) {
                     for (let z = z0; z <= z1; z++) {
@@ -1363,51 +1408,44 @@ function isFreshWaterColumnAt(x, z) {
 }
 
 async function voxelize() {
-    voxels.fill(EMPTY)
-
+    const bounds = getActiveGenerationBounds()
     const mountainStoneThreshold = mountains.length
         ? Math.max(...mountains.map(m => m.peak)) * 0.58
         : Infinity
-    const seaLevel = oceans[0].level
-
-    for (let x = 0; x < N; x++) {
-        for (let z = 0; z < N; z++) {
+    for (let x = bounds.x0; x < bounds.x1; x++) {
+        for (let z = bounds.z0; z < bounds.z1; z++) {
             const h = heights[ci(x, z)]
             const wet = waterLevels[ci(x, z)] !== EMPTY && h < waterLevels[ci(x, z)]
             const desert = !wet && desertInfluenceAt(x, z) > 0.42
             const beach = !wet && !desert && isBeachSandAt(x, z, h)
             const stoneMountainTop = mountainRiseAt(x, z) >= mountainStoneThreshold
-
             for (let y = 0; y <= h; y++) {
                 let type
                 if (y === h) {
                     type = wet ? DIRT : (desert || beach ? SAND : (stoneMountainTop ? STONE : (isPineForestAt(x, z) ? DARK_GRASS : GRASS)))
-                } else if (desert && y >= h - 4) {
-                    type = SAND
-                } else if (beach && y >= h - 3) {
-                    type = SAND
-                } else if (y >= h - 3) {
-                    type = DIRT
-                } else {
-                    type = STONE
-                }
+                } else if (desert && y >= h - 4) type = SAND
+                else if (beach && y >= h - 3) type = SAND
+                else if (y >= h - 3) type = DIRT
+                else type = STONE
                 set(x, y, z, type)
             }
         }
         if ((x & 7) === 7) await yieldToBrowser()
     }
-    for (let x = 0; x < N; x++) {
-        for (let z = 0; z < N; z++) {
-            const level = waterLevels[ci(x, z)]
+    for (let x = bounds.x0; x < bounds.x1; x++) {
+        for (let z = bounds.z0; z < bounds.z1; z++) {
+            const col = ci(x, z)
+            const level = waterLevels[col]
             if (level === EMPTY) continue
             const waterType = isFreshWaterColumnAt(x, z) ? FRESH_WATER : WATER
-            for (let y = heights[ci(x, z)] + 1; y <= level; y++) {
+            for (let y = heights[col] + 1; y <= level; y++) {
                 if (get(x, y, z) === EMPTY) set(x, y, z, waterType)
             }
         }
         if ((x & 7) === 7) await yieldToBrowser()
     }
 }
+
 
 const WATER_STEP_INTERVAL = 0.04
 const WATER_CELLS_PER_STEP = 4096
@@ -1460,11 +1498,11 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
 }
 
 async function pruneFloatingWater() {
-    // Water is voxelized only above the column terrain and below its water level.
-    // Limit the cleanup scan to these candidate cells rather than all world voxels.
+    // Water is checked only in this chunk and above each column's terrain.
+    const bounds = getActiveGenerationBounds()
     let removed = 0
-    for (let x = 1; x < N - 1; x++) {
-        for (let z = 1; z < N - 1; z++) {
+    for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
+        for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
             const col = ci(x, z)
             const firstWaterY = Math.max(1, heights[col] + 1)
             const lastWaterY = Math.min(H - 1, waterLevels[col])
@@ -1491,10 +1529,10 @@ function setFluidVoxel(x, y, z, type) {
 }
 
 async function flowWaterDownhill() {
-    // Seed exposed freshwater surfaces into the general finite-flow solver.
-    // There are no preset waterfall outlets or suspended stream columns.
-    for (let x = 1; x < N - 1; x++) {
-        for (let z = 1; z < N - 1; z++) {
+    // Seed freshwater surfaces only in the chunk being generated.
+    const bounds = getActiveGenerationBounds()
+    for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
+        for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
             const col = ci(x, z)
             const surfaceY = waterLevels[col]
             if (surfaceY < 1 || surfaceY >= H) continue
@@ -1729,14 +1767,15 @@ async function processDirtyWaterChunks() {
 
 async function carveSurfaceFissures() {
     const seaLevel = oceans[0].level
+    const bounds = getActiveGenerationBounds()
 
     for (const fissure of surfaceFissures) {
         const dirX = Math.cos(fissure.angle), dirZ = Math.sin(fissure.angle)
         const sideX = -dirZ, sideZ = dirX
-        const minX = Math.max(1, Math.floor(Math.min(fissure.x, fissure.x + dirX * fissure.length) - fissure.bend - 8))
-        const maxX = Math.min(N - 2, Math.ceil(Math.max(fissure.x, fissure.x + dirX * fissure.length) + fissure.bend + 8))
-        const minZ = Math.max(1, Math.floor(Math.min(fissure.z, fissure.z + dirZ * fissure.length) - fissure.bend - 8))
-        const maxZ = Math.min(N - 2, Math.ceil(Math.max(fissure.z, fissure.z + dirZ * fissure.length) + fissure.bend + 8))
+        const minX = Math.max(1, bounds.x0, Math.floor(Math.min(fissure.x, fissure.x + dirX * fissure.length) - fissure.bend - 8))
+        const maxX = Math.min(N - 2, bounds.x1 - 1, Math.ceil(Math.max(fissure.x, fissure.x + dirX * fissure.length) + fissure.bend + 8))
+        const minZ = Math.max(1, bounds.z0, Math.floor(Math.min(fissure.z, fissure.z + dirZ * fissure.length) - fissure.bend - 8))
+        const maxZ = Math.min(N - 2, bounds.z1 - 1, Math.ceil(Math.max(fissure.z, fissure.z + dirZ * fissure.length) + fissure.bend + 8))
 
         for (let x = minX; x <= maxX; x++) {
             for (let z = minZ; z <= maxZ; z++) {
@@ -1775,6 +1814,7 @@ async function carveSurfaceFissures() {
 
 async function carveMountainCaves() {
     const seaLevel = oceans[0].level
+    const bounds = getActiveGenerationBounds()
 
     for (let mountainIndex = 0; mountainIndex < mountains.length; mountainIndex++) {
         const mountain = mountains[mountainIndex]
@@ -1790,7 +1830,7 @@ async function carveMountainCaves() {
             const mouthZ = mountain.z + Math.sin(angle) * mountain.rz * mouthRadius
             const mx = clamp(Math.round(mouthX), 1, N - 2)
             const mz = clamp(Math.round(mouthZ), 1, N - 2)
-            const mouthSurface = heights[ci(mx, mz)]
+            const mouthSurface = heights[ci(mx, mz)] || terrainHeight(mx, mz)
             if (mouthSurface <= seaLevel + 8) continue
 
             const inwardX = -Math.cos(angle)
@@ -1805,13 +1845,13 @@ async function carveMountainCaves() {
             const verticalSlope = (rand(caveKey + 1031, caveKey + 1033) - 0.5) * 0.16
             const centerY = mouthSurface - baseHalfHeight * (0.72 + rand(caveKey + 1039, caveKey + 1049) * 0.14)
 
-            const minX = Math.max(1, Math.floor(Math.min(mouthX, mouthX + inwardX * depth) - baseHalfWidth - sideBend - 5))
-            const maxX = Math.min(N - 2, Math.ceil(Math.max(mouthX, mouthX + inwardX * depth) + baseHalfWidth + sideBend + 5))
-            const minZ = Math.max(1, Math.floor(Math.min(mouthZ, mouthZ + inwardZ * depth) - baseHalfWidth - sideBend - 5))
-            const maxZ = Math.min(N - 2, Math.ceil(Math.max(mouthZ, mouthZ + inwardZ * depth) + baseHalfWidth + sideBend + 5))
+            const minX = Math.max(1, bounds.x0, Math.floor(Math.min(mouthX, mouthX + inwardX * depth) - baseHalfWidth - sideBend - 5))
+            const maxX = Math.min(N - 2, bounds.x1 - 1, Math.ceil(Math.max(mouthX, mouthX + inwardX * depth) + baseHalfWidth + sideBend + 5))
+            const minZ = Math.max(1, bounds.z0, Math.floor(Math.min(mouthZ, mouthZ + inwardZ * depth) - baseHalfWidth - sideBend - 5))
+            const maxZ = Math.min(N - 2, bounds.z1 - 1, Math.ceil(Math.max(mouthZ, mouthZ + inwardZ * depth) + baseHalfWidth + sideBend + 5))
 
-            for (let x = minX; x <= maxX; x++) {
-                for (let z = minZ; z <= maxZ; z++) {
+            for (let x = Math.max(minX, bounds.x0); x <= Math.min(maxX, bounds.x1 - 1); x++) {
+                for (let z = Math.max(minZ, bounds.z0); z <= Math.min(maxZ, bounds.z1 - 1); z++) {
                     const dx = x + 0.5 - mouthX
                     const dz = z + 0.5 - mouthZ
                     const along = dx * inwardX + dz * inwardZ
@@ -1849,8 +1889,8 @@ async function carveMountainCaves() {
                 }
                 if ((x & 7) === 7) await yieldToBrowser()
             }
-            for (let x = minX; x <= maxX; x++) {
-                for (let z = minZ; z <= maxZ; z++) {
+            for (let x = Math.max(minX, bounds.x0); x <= Math.min(maxX, bounds.x1 - 1); x++) {
+                for (let z = Math.max(minZ, bounds.z0); z <= Math.min(maxZ, bounds.z1 - 1); z++) {
                     const dx = x + 0.5 - mouthX
                     const dz = z + 0.5 - mouthZ
                     const along = dx * inwardX + dz * inwardZ
@@ -1896,8 +1936,8 @@ async function carveMountainCaves() {
             const chamberMinZ = Math.max(1, Math.floor(chamberZ - radiusAlong - radiusSide - 2))
             const chamberMaxZ = Math.min(N - 2, Math.ceil(chamberZ + radiusAlong + radiusSide + 2))
 
-            for (let x = chamberMinX; x <= chamberMaxX; x++) {
-                for (let z = chamberMinZ; z <= chamberMaxZ; z++) {
+            for (let x = Math.max(chamberMinX, bounds.x0); x <= Math.min(chamberMaxX, bounds.x1 - 1); x++) {
+                for (let z = Math.max(chamberMinZ, bounds.z0); z <= Math.min(chamberMaxZ, bounds.z1 - 1); z++) {
                     const colHeight = heights[ci(x, z)]
                     if (colHeight <= seaLevel + 2) continue
                     const dx = x + 0.5 - chamberX
@@ -1937,8 +1977,8 @@ async function carveMountainCaves() {
                 const bx1 = Math.min(N - 2, Math.ceil(bx + branchRX + branchRZ + 2))
                 const bz0 = Math.max(1, Math.floor(bz - branchRX - branchRZ - 2))
                 const bz1 = Math.min(N - 2, Math.ceil(bz + branchRX + branchRZ + 2))
-                for (let x = bx0; x <= bx1; x++) {
-                    for (let z = bz0; z <= bz1; z++) {
+                for (let x = Math.max(bx0, bounds.x0); x <= Math.min(bx1, bounds.x1 - 1); x++) {
+                    for (let z = Math.max(bz0, bounds.z0); z <= Math.min(bz1, bounds.z1 - 1); z++) {
                         const colHeight = heights[ci(x, z)]
                         if (colHeight <= seaLevel + 2) continue
                         const dx = x + 0.5 - bx, dz = z + 0.5 - bz
@@ -1961,8 +2001,9 @@ async function carveMountainCaves() {
 }
 
 async function pruneFloatingArtifacts() {
-    for (let x = 1; x < N - 1; x++) {
-        for (let z = 1; z < N - 1; z++) {
+    const bounds = getActiveGenerationBounds()
+    for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
+        for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
             // Preserve the watchtower's exact supplied template, including its
             // intentionally unsupported top roof block and upper roof details.
             if (isInsideStructureFootprint(x, z)) continue
@@ -1985,6 +2026,8 @@ async function pruneFloatingArtifacts() {
 
 async function addTrees() {
     const seaLevel = oceans[0].level
+    const bounds = getActiveGenerationBounds()
+    const firstAligned = (minimum, origin, step) => origin + Math.max(0, Math.ceil((minimum - origin) / step)) * step
 
     function hasWaterNearby(x, z, radius) {
         for (let dx = -radius; dx <= radius; dx++) {
@@ -2143,14 +2186,17 @@ async function addTrees() {
         // The template blocks themselves are fixed and never randomized.
         if (rand(6419 + worldRegionX * 29, 6421 + worldRegionZ * 31) > 0.28) return null
 
+        const targetCX = Math.floor(rand(6473 + worldRegionX * 17, 6479 + worldRegionZ * 23) * CHUNKS_PER_AXIS)
+        const targetCZ = Math.floor(rand(6481 + worldRegionX * 29, 6483 + worldRegionZ * 31) * CHUNKS_PER_AXIS)
+        if (targetCX !== Math.floor(bounds.x0 / CS) || targetCZ !== Math.floor(bounds.z0 / CS)) return null
         const seaLevel = oceans[0].level
         let best = null
         let bestScore = -Infinity
 
         // Scan candidate footprints with overlap-safe spacing; choose the densest,
         // flattest valid pine site so the tower can sit on a real ground platform.
-        for (let x = 8; x <= N - 9; x += 5) {
-            for (let z = 8; z <= N - 9; z += 5) {
+        for (let x = firstAligned(Math.max(8, bounds.x0), 8, 5); x <= Math.min(N - 9, bounds.x1 - 7); x += 5) {
+            for (let z = firstAligned(Math.max(8, bounds.z0), 8, 5); z <= Math.min(N - 9, bounds.z1 - 7); z += 5) {
                 if (!isPineForestAt(x + 3, z + 3)) continue
 
                 let pineCount = 0
@@ -2252,14 +2298,17 @@ async function addTrees() {
     async function placeAncientRuin() {
         // An uncommon, fixed-layout ruin may appear on an eligible plains site per region.
         if (rand(7103 + worldRegionX * 13, 7109 + worldRegionZ * 17) > 0.82) return null
+        const targetCX = Math.floor(rand(7151 + worldRegionX * 19, 7159 + worldRegionZ * 23) * CHUNKS_PER_AXIS)
+        const targetCZ = Math.floor(rand(7177 + worldRegionX * 29, 7187 + worldRegionZ * 31) * CHUNKS_PER_AXIS)
+        if (targetCX !== Math.floor(bounds.x0 / CS) || targetCZ !== Math.floor(bounds.z0 / CS)) return null
         const seaLevel = oceans[0].level
         const width = ANCIENT_RUIN_STRUCTURE.size[0]
         const depth = ANCIENT_RUIN_STRUCTURE.size[2]
         let best = null
         let bestScore = -Infinity
 
-        for (let x = 10; x <= N - width - 10; x += 5) {
-            for (let z = 10; z <= N - depth - 10; z += 5) {
+        for (let x = firstAligned(Math.max(10, bounds.x0), 10, 5); x <= Math.min(N - width - 10, bounds.x1 - width); x += 5) {
+            for (let z = firstAligned(Math.max(10, bounds.z0), 10, 5); z <= Math.min(N - depth - 10, bounds.z1 - depth); z += 5) {
                 let plainsCount = 0
                 let minHeight = H
                 let maxHeight = 0
@@ -2337,8 +2386,8 @@ async function addTrees() {
 
     const ancientRuinPlacement = await placeAncientRuin()
 
-    for (let x = 3; x < N - 3; x++) {
-        for (let z = 3; z < N - 3; z++) {
+    for (let x = Math.max(3, bounds.x0); x < Math.min(N - 3, bounds.x1); x++) {
+        for (let z = Math.max(3, bounds.z0); z < Math.min(N - 3, bounds.z1); z++) {
             const col = ci(x,z), h = heights[col]
             if (isInsideStructureFootprint(x, z)) continue
             if (get(x,h,z) !== SAND || desertInfluenceAt(x,z) < 0.42) continue
@@ -2347,8 +2396,8 @@ async function addTrees() {
         }
         if ((x & 7) === 7) await yieldToBrowser()
     }
-    for (let x = 3; x < N - 3; x++) {
-        for (let z = 3; z < N - 3; z++) {
+    for (let x = Math.max(3, bounds.x0); x < Math.min(N - 3, bounds.x1); x++) {
+        for (let z = Math.max(3, bounds.z0); z < Math.min(N - 3, bounds.z1); z++) {
             const col=ci(x,z), h=heights[col]
             if (isInsideStructureFootprint(x, z)) continue
             if (h <= seaLevel || !isGrassBlock(get(x,h,z))) continue
@@ -2687,6 +2736,7 @@ async function buildChunk(cx, cz) {
     const localCX = cx - regionX * CHUNKS_PER_AXIS
     const localCZ = cz - regionZ * CHUNKS_PER_AXIS
     const data = await getRegionData(regionX, regionZ)
+    await generateChunkTerrain(data, localCX, localCZ)
     if (buildEpoch !== worldGenerationEpoch || !desiredChunkKeys.has(key)) return null
     const chunkList = []
     const groups = Array.from({ length: MCOUNT }, () => ({
@@ -3324,15 +3374,88 @@ const GAME_FONT_STACKS = {
     "monospace": "'Courier New', Consolas, monospace",
     "old-english": "'Old English Text MT', 'UnifrakturCook', 'Blackletter', serif",
     "webdings": "Webdings, Wingdings, sans-serif",
-    "sha256": "'SHA256', Arial, Helvetica, sans-serif"
+    "sha256": "Arial, Helvetica, sans-serif"
+}
+
+let sha256TextMode = false
+let sha256TextObserver = null
+let sha256OriginalText = new WeakMap()
+let sha256PendingText = new WeakMap()
+const sha256TextRoot = document.querySelector('.ui')
+
+async function sha256Hex(text) {
+    const bytes = new TextEncoder().encode(text)
+    const digest = await crypto.subtle.digest('SHA-256', bytes)
+    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function hashUiTextNode(node) {
+    if (!sha256TextMode || !node || !node.isConnected) return
+    if (node.parentElement?.closest('button')) return
+    const original = node.data
+    const trimmed = original.trim()
+    if (!trimmed || /^[0-9a-f]{64}$/i.test(trimmed)) return
+    if (sha256PendingText.get(node) === original) return
+    sha256OriginalText.set(node, original)
+    sha256PendingText.set(node, original)
+    sha256Hex(trimmed).then(hash => {
+        if (sha256TextMode && node.isConnected && node.data === original) node.data = hash
+        if (sha256PendingText.get(node) === original) sha256PendingText.delete(node)
+    }).catch(error => {
+        console.warn('SHA-256 display mode is unavailable in this browser context.', error)
+        if (sha256PendingText.get(node) === original) sha256PendingText.delete(node)
+    })
+}
+
+function hashUiText(root = sha256TextRoot) {
+    if (!sha256TextMode || !root) return
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    let node
+    while ((node = walker.nextNode())) hashUiTextNode(node)
+}
+
+function enableSha256TextMode() {
+    if (!sha256TextRoot) return
+    sha256TextMode = true
+    if (!sha256TextObserver) {
+        sha256TextObserver = new MutationObserver(() => {
+            if (sha256TextMode) hashUiText()
+        })
+    }
+    sha256TextObserver.observe(sha256TextRoot, {
+        subtree: true, childList: true, characterData: true
+    })
+    hashUiText()
+}
+
+function disableSha256TextMode() {
+    sha256TextMode = false
+    if (sha256TextObserver) sha256TextObserver.disconnect()
+    if (!sha256TextRoot) return
+    const walker = document.createTreeWalker(sha256TextRoot, NodeFilter.SHOW_TEXT)
+    const nodes = []
+    let node
+    while ((node = walker.nextNode())) nodes.push(node)
+    for (const textNode of nodes) {
+        const original = sha256OriginalText.get(textNode)
+        if (original !== undefined) textNode.data = original
+    }
+    sha256OriginalText = new WeakMap()
+    sha256PendingText = new WeakMap()
 }
 
 function applyGameFont(value) {
-    const family = GAME_FONT_STACKS[value] || GAME_FONT_STACKS["sans-serif"]
-    document.documentElement.style.setProperty("--game-ui-font", family)
-    document.getElementById('fontFamily').value =
-        Object.prototype.hasOwnProperty.call(GAME_FONT_STACKS, value) ? value : "sans-serif"
-    try { localStorage.setItem('voxelWorldFontFamily', value) } catch (_) {}
+    const known = Object.prototype.hasOwnProperty.call(GAME_FONT_STACKS, value)
+    const selected = known ? value : "sans-serif"
+    if (selected === "sha256") {
+        document.documentElement.style.setProperty("--game-ui-font", GAME_FONT_STACKS["sans-serif"])
+        enableSha256TextMode()
+    } else {
+        disableSha256TextMode()
+        document.documentElement.style.setProperty("--game-ui-font", GAME_FONT_STACKS[selected])
+    }
+    document.getElementById('fontFamily').value = selected
+    try { localStorage.setItem('voxelWorldFontFamily', selected) } catch (_) {}
 }
 
 function openSettings() {
@@ -3443,6 +3566,7 @@ async function generateRegionData(regionX, regionZ) {
     const epoch = worldGenerationEpoch
     const pending = regionGenerationQueue.catch(() => undefined).then(async () => {
         if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
+        const savedState = regionStateCache.get(key) || null
         let work = {
             ...captureRegionGlobals(),
             worldRegionX: regionX,
@@ -3461,7 +3585,7 @@ async function generateRegionData(regionX, regionZ) {
             surfaceFissures: [],
             hillFeatures: [],
             plains: [],
-            voxelEdits: new Map(),
+            voxelEdits: new Map(savedState?.edits || []),
             trackVoxelEdits: false,
             flowingWater: new Map(),
             dirtyWaterChunks: new Set(),
@@ -3473,7 +3597,7 @@ async function generateRegionData(regionX, regionZ) {
         work.heights.fill(0)
         work.waterLevels.fill(EMPTY)
 
-        async function runStage(action) {
+        async function runFeatureStage(action) {
             if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
             const live = captureRegionGlobals()
             regionGenerationStageActive = true
@@ -3491,37 +3615,18 @@ async function generateRegionData(regionX, regionZ) {
             await yieldToBrowser()
         }
 
-        await runStage(createWorldFeatures)
-        await runStage(createHeightMap)
-        await runStage(applyOceanRiftsToHeightMap)
-        await runStage(createOceans)
-        await runStage(createPonds)
-        await runStage(createRiverChannels)
-        await runStage(voxelize)
-        await runStage(carveSurfaceFissures)
-        await runStage(carveMountainCaves)
-        await runStage(addTrees)
-        await runStage(pruneFloatingArtifacts)
-        await runStage(pruneFloatingWater)
-        await runStage(() => restoreRegionState(regionStateCache.get(key) || null))
-        await runStage(async () => {
-            await flowWaterDownhill()
-            trackVoxelEdits = true
-        })
-
+        // Region generation establishes only shared feature metadata; terrain
+        // is generated separately, chunk-by-chunk, on demand.
+        await runFeatureStage(createWorldFeatures)
         if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
-        const live = captureRegionGlobals()
-        let generated
-        try {
-            restoreRegionGlobals(work)
-            generated = Object.assign(captureRegionGlobals(), {
-                regionX,
-                regionZ,
-                trackVoxelEdits: true
-            })
-        } finally {
-            restoreRegionGlobals(live)
-        }
+        const generated = Object.assign({}, work, {
+            regionX,
+            regionZ,
+            generatedChunkKeys: new Set(),
+            chunkGenerationPromises: new Map(),
+            pendingRegionState: savedState,
+            trackVoxelEdits: true
+        })
         generatedRegionCache.set(key, generated)
         trimGeneratedRegionCache(key)
         return generated
@@ -3533,6 +3638,87 @@ async function generateRegionData(regionX, regionZ) {
         return await pending
     } finally {
         if (regionGenerationPromises.get(key) === pending) regionGenerationPromises.delete(key)
+    }
+}
+
+function applySavedRegionStateForChunk(saved, bounds) {
+    if (!saved) return
+    for (const [cell, type] of (saved.edits || [])) {
+        const x = cell % N
+        const z = Math.floor(cell / N) % N
+        if (x < bounds.x0 || x >= bounds.x1 || z < bounds.z0 || z >= bounds.z1) continue
+        voxels[cell] = type
+        voxelEdits.set(cell, type)
+    }
+    for (const [cell, state] of (saved.flowingWater || [])) {
+        const x = cell % N
+        const z = Math.floor(cell / N) % N
+        if (x < bounds.x0 || x >= bounds.x1 || z < bounds.z0 || z >= bounds.z1) continue
+        if (isWaterBlock(voxels[cell])) flowingWater.set(cell, { ...state })
+    }
+}
+
+async function generateChunkTerrain(data, localCX, localCZ) {
+    const chunkKey = localCX + ',' + localCZ
+    if (!data.generatedChunkKeys) data.generatedChunkKeys = new Set()
+    if (!data.chunkGenerationPromises) data.chunkGenerationPromises = new Map()
+    if (data.generatedChunkKeys.has(chunkKey)) return data
+    if (data.chunkGenerationPromises.has(chunkKey)) return data.chunkGenerationPromises.get(chunkKey)
+
+    const epoch = worldGenerationEpoch
+    const bounds = {
+        x0: localCX * CS,
+        x1: Math.min(N, (localCX + 1) * CS),
+        z0: localCZ * CS,
+        z1: Math.min(N, (localCZ + 1) * CS)
+    }
+    const pending = regionGenerationQueue.catch(() => undefined).then(async () => {
+        if (epoch !== worldGenerationEpoch) throw new Error('Chunk generation superseded by a new world')
+        if (data.generatedChunkKeys.has(chunkKey)) return data
+
+        const live = captureRegionGlobals()
+        activeGenerationBounds = bounds
+        regionGenerationStageActive = true
+        activeRegionStageEpoch = epoch
+        try {
+            restoreRegionGlobals(data)
+            trackVoxelEdits = false
+            await createHeightMap()
+            await yieldToBrowser()
+            await applyOceanRiftsToHeightMap()
+            await createOceans()
+            await createPonds()
+            await createRiverChannels()
+            await voxelize()
+            await carveSurfaceFissures()
+            await carveMountainCaves()
+            await addTrees()
+            await pruneFloatingArtifacts()
+            await pruneFloatingWater()
+            applySavedRegionStateForChunk(data.pendingRegionState, bounds)
+            await flowWaterDownhill()
+            if (epoch !== worldGenerationEpoch) throw new Error('Chunk generation superseded by a new world')
+
+            Object.assign(data, captureRegionGlobals(), {
+                regionX: data.regionX,
+                regionZ: data.regionZ,
+                trackVoxelEdits: true
+            })
+            data.generatedChunkKeys.add(chunkKey)
+            return data
+        } finally {
+            activeGenerationBounds = null
+            restoreRegionGlobals(live)
+            regionGenerationStageActive = false
+            activeRegionStageEpoch = -1
+        }
+    })
+    regionGenerationQueue = pending.catch(() => undefined)
+    data.chunkGenerationPromises.set(chunkKey, pending)
+    try {
+        return await pending
+    } finally {
+        if (data.chunkGenerationPromises.get(chunkKey) === pending) data.chunkGenerationPromises.delete(chunkKey)
     }
 }
 
@@ -3618,6 +3804,8 @@ async function streamToRegion() {
         status.textContent = 'Preparing nearby terrain…'
         const nextData = await getRegionData(nextRegionX, nextRegionZ)
         if (epoch !== worldGenerationEpoch) return
+        await generateChunkTerrain(nextData, Math.floor(nextX / CS), Math.floor(nextZ / CS))
+        if (epoch !== worldGenerationEpoch) return
 
         activateRegionData(nextData)
         shiftLoadedMeshes(nextRegionX - oldRegionX, nextRegionZ - oldRegionZ)
@@ -3660,28 +3848,55 @@ async function generate() {
         if (epoch !== worldGenerationEpoch) return
         activateRegionData(initialRegion)
 
+        // Find a plausible nearby land candidate from features, then generate
+        // only its chunk before validating safe standing positions.
+        let spawnCandidate = null
+        let spawnScore = Infinity
+        const seaLevel = oceans[0].level
+        for (let x = 2; x < N - 2; x += 3) {
+            for (let z = 2; z < N - 2; z += 3) {
+                if (islandInfluenceAt(x, z) < 0.34) continue
+                const sampledHeight = terrainHeight(x, z)
+                if (sampledHeight <= seaLevel + 1) continue
+                const distance = (x + 0.5 - N / 2) ** 2 + (z + 0.5 - N / 2) ** 2
+                const score = distance - Math.max(0, sampledHeight - seaLevel - 2) * 2
+                if (score < spawnScore) {
+                    spawnScore = score
+                    spawnCandidate = { x, z }
+                }
+            }
+        }
+        if (!spawnCandidate) spawnCandidate = { x: N / 2, z: N / 2 }
+
+        const spawnCX = Math.floor(spawnCandidate.x / CS)
+        const spawnCZ = Math.floor(spawnCandidate.z / CS)
+        await generateChunkTerrain(initialRegion, spawnCX, spawnCZ)
+        if (epoch !== worldGenerationEpoch) return
+        activateRegionData(initialRegion)
+
         let found = false
-        for (let radius = 0; radius < N / 2 && !found; radius++) {
-            for (let x = Math.max(2, Math.floor(N / 2 - radius));
-                x <= Math.min(N - 3, Math.floor(N / 2 + radius)) && !found; x++) {
-                for (let z = Math.max(2, Math.floor(N / 2 - radius));
-                    z <= Math.min(N - 3, Math.floor(N / 2 + radius)); z++) {
-                    if (heights[ci(x, z)] <= oceans[0].level) continue
-                    const floor = findGround(x + 0.5, z + 0.5)
-                    if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
-                    if (canOccupy(x + 0.5, z + 0.5, floor)) {
-                        playerX = x + 0.5
-                        playerZ = z + 0.5
-                        feetY = floor
-                        found = true
-                        break
-                    }
+        let bestSpawnDistance = Infinity
+        const spawnX0 = spawnCX * CS, spawnZ0 = spawnCZ * CS
+        const spawnX1 = Math.min(N, spawnX0 + CS), spawnZ1 = Math.min(N, spawnZ0 + CS)
+        for (let x = Math.max(2, spawnX0); x < Math.min(N - 2, spawnX1); x++) {
+            for (let z = Math.max(2, spawnZ0); z < Math.min(N - 2, spawnZ1); z++) {
+                if (heights[ci(x, z)] <= oceans[0].level) continue
+                const floor = findGround(x + 0.5, z + 0.5)
+                if (floor < 1 || floor + PLAYER_HEIGHT >= H) continue
+                if (!canOccupy(x + 0.5, z + 0.5, floor)) continue
+                const distance = (x + 0.5 - spawnCandidate.x) ** 2 + (z + 0.5 - spawnCandidate.z) ** 2
+                if (distance < bestSpawnDistance) {
+                    bestSpawnDistance = distance
+                    playerX = x + 0.5
+                    playerZ = z + 0.5
+                    feetY = floor
+                    found = true
                 }
             }
         }
         if (!found) {
-            playerX = N / 2
-            playerZ = N / 2
+            playerX = spawnCandidate.x + 0.5
+            playerZ = spawnCandidate.z + 0.5
             feetY = findGround(playerX, playerZ)
         }
 
