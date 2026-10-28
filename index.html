@@ -246,7 +246,8 @@
 
 const canvas = document.getElementById('c')
 const status = document.getElementById('status')
-const engine = new BABYLON.Engine(canvas, true)
+const engine = new BABYLON.Engine(canvas, false, { preserveDrawingBuffer: false, stencil: false }, false)
+engine.setHardwareScalingLevel(1.15)
 const scene = new BABYLON.Scene(engine)
 
 scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
@@ -254,10 +255,11 @@ scene.fogMode = BABYLON.Scene.FOGMODE_EXP2
 scene.fogDensity = 0.012
 scene.fogColor = new BABYLON.Color3(.53, .81, .92)
 scene.collisionsEnabled = false
+scene.skipPointerMovePicking = true
 const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_LOG = 8, PALM_LEAVES = 9, PINE_LOG = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
-const CHUNK_RENDER_RADIUS = 5
+const CHUNK_RENDER_RADIUS = 3
 const MAX_CHUNK_BUILDS_PER_FRAME = 1
 const MAX_LOADED_CHUNKS = (() => {
     let count = 0
@@ -364,7 +366,7 @@ const materials = colors.map((color, i) => {
     const m = new BABYLON.StandardMaterial('mat' + i, scene)
     m.diffuseColor = BABYLON.Color3.FromHexString(color)
     m.specularColor = BABYLON.Color3.Black()
-    m.backFaceCulling = false
+    m.backFaceCulling = i !== WATER && i !== FRESH_WATER
 
     if (i === WATER || i === FRESH_WATER) {
         m.diffuseColor = i === FRESH_WATER
@@ -1448,7 +1450,10 @@ async function voxelize() {
 
 
 const WATER_STEP_INTERVAL = 0.04
-const WATER_CELLS_PER_STEP = 4096
+const WATER_CELLS_PER_STEP = 512
+let waterPhysicsSnapshot = []
+let waterPhysicsSnapshotCursor = 0
+let waterPhysicsSnapshotMap = null
 const WATER_MAX_HORIZONTAL_STEPS = 3
 const WATER_HORIZONTAL_COOLDOWN_TICKS = 4
 const WATER_DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
@@ -1497,29 +1502,26 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
     }
 }
 
-async function pruneFloatingWater() {
-    // Water is checked only in this chunk and above each column's terrain.
+async function fillWaterBodiesForChunk() {
+    // The terrain, basin, river, and feature passes complete before this runs.
+    // Fill every empty voxel from each column's ground to its waterline. This
+    // operation only adds missing water; it never deletes ocean or lake blocks.
     const bounds = getActiveGenerationBounds()
-    let removed = 0
     for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
         for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
             const col = ci(x, z)
-            const firstWaterY = Math.max(1, heights[col] + 1)
-            const lastWaterY = Math.min(H - 1, waterLevels[col])
-            for (let y = firstWaterY; y <= lastWaterY; y++) {
-                if (!isWaterBlock(get(x, y, z)) || get(x, y - 1, z) !== EMPTY) continue
-                for (let removeY = y; removeY <= lastWaterY; removeY++) {
-                    if (!isWaterBlock(get(x, removeY, z))) break
-                    set(x, removeY, z, EMPTY)
-                    removed++
-                }
-                break
+            const waterline = Math.min(H - 1, waterLevels[col])
+            const floor = Math.max(0, heights[col])
+            if (waterline <= floor) continue
+            const type = isFreshWaterColumnAt(x, z) ? FRESH_WATER : WATER
+            for (let y = floor + 1; y <= waterline; y++) {
+                if (get(x, y, z) === EMPTY) set(x, y, z, type)
             }
         }
         if ((x & 7) === 7) await yieldToBrowser()
     }
-    return removed
 }
+
 
 function setFluidVoxel(x, y, z, type) {
     // Fluid positions are transient simulation state, not persistent player edits.
@@ -1529,18 +1531,21 @@ function setFluidVoxel(x, y, z, type) {
 }
 
 async function flowWaterDownhill() {
-    // Seed freshwater surfaces only in the chunk being generated.
+    // The complete water volume is filled before this pass. Activate only exposed
+    // surface cells; ocean/lake interiors stay stable and cheap to render.
     const bounds = getActiveGenerationBounds()
     for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
         for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
             const col = ci(x, z)
             const surfaceY = waterLevels[col]
             if (surfaceY < 1 || surfaceY >= H) continue
-            if (get(x, surfaceY, z) !== FRESH_WATER) continue
+            if (!isWaterBlock(get(x, surfaceY, z))) continue
 
             let exposed = false
             for (const [dx, dz] of WATER_DIRECTIONS) {
-                if (get(x + dx, surfaceY, z + dz) === EMPTY) {
+                const nx = x + dx, nz = z + dz
+                if (nx < bounds.x0 || nx >= bounds.x1 || nz < bounds.z0 || nz >= bounds.z1) continue
+                if (get(nx, surfaceY, nz) === EMPTY) {
                     exposed = true
                     break
                 }
@@ -1703,7 +1708,17 @@ function simulateWaterCell(cell, state) {
 }
 
 function updateWaterPhysics(dt) {
-    if (!flowingWater.size) return
+    if (!flowingWater.size) {
+        waterPhysicsSnapshot = []
+        waterPhysicsSnapshotCursor = 0
+        waterPhysicsSnapshotMap = flowingWater
+        return
+    }
+    if (waterPhysicsSnapshotMap !== flowingWater) {
+        waterPhysicsSnapshot = []
+        waterPhysicsSnapshotCursor = 0
+        waterPhysicsSnapshotMap = flowingWater
+    }
     waterPhysicsAccumulator += Math.min(dt, 0.1)
     if (waterPhysicsAccumulator < WATER_STEP_INTERVAL) return
 
@@ -1711,23 +1726,28 @@ function updateWaterPhysics(dt) {
     waterPhysicsAccumulator -= stepCount * WATER_STEP_INTERVAL
 
     for (let step = 0; step < stepCount; step++) {
-        const activeCells = Array.from(flowingWater.keys())
-        if (!activeCells.length) {
-            waterPhysicsCursor = 0
-            break
+        if (waterPhysicsSnapshotCursor >= waterPhysicsSnapshot.length) {
+            waterPhysicsSnapshot = Array.from(flowingWater.keys())
+            waterPhysicsSnapshotCursor = 0
         }
-        const count = Math.min(WATER_CELLS_PER_STEP, activeCells.length)
-        const start = waterPhysicsCursor % activeCells.length
-        const batch = new Array(count)
-        for (let i = 0; i < count; i++) batch[i] = activeCells[(start + i) % activeCells.length]
-        waterPhysicsCursor = (start + count) % activeCells.length
-        for (const cell of batch) {
+        if (!waterPhysicsSnapshot.length) break
+
+        const end = Math.min(
+            waterPhysicsSnapshotCursor + WATER_CELLS_PER_STEP,
+            waterPhysicsSnapshot.length
+        )
+        while (waterPhysicsSnapshotCursor < end) {
+            const cell = waterPhysicsSnapshot[waterPhysicsSnapshotCursor++]
             const state = flowingWater.get(cell)
-            if (!state) continue
-            simulateWaterCell(cell, state)
+            if (state) simulateWaterCell(cell, state)
+        }
+        if (waterPhysicsSnapshotCursor >= waterPhysicsSnapshot.length) {
+            waterPhysicsSnapshot = []
+            waterPhysicsSnapshotCursor = 0
         }
     }
 }
+
 
 async function processDirtyWaterChunks() {
     if (chunkBuildBusy || worldTransitioning || settingsOpen || !dirtyWaterChunks.size) return
@@ -2756,20 +2776,17 @@ async function buildChunk(cx, cz) {
         return data.voxels[idx(x, y, z)]
     }
 
+    // Surface metadata bounds the terrain; add headroom for trees/structures
+    // and include the filled-water line, avoiding a full-height probe scan.
     let maxY = 0
-    for (let y = H - 1; y >= 0; y--) {
-        let foundOccupied = false
-        for (let z = z0; z < z1 && !foundOccupied; z++) {
-            for (let x = x0; x < x1; x++) {
-                if (blockAt(x, y, z) !== EMPTY) {
-                    foundOccupied = true
-                    break
-                }
-            }
-        }
-        if (foundOccupied) {
-            maxY = y
-            break
+    for (let z = z0; z < z1; z++) {
+        for (let x = x0; x < x1; x++) {
+            const col = z * N + x
+            maxY = Math.max(
+                maxY,
+                Math.min(H - 1, heights[col] + 20),
+                Math.min(H - 1, waterLevels[col])
+            )
         }
     }
 
@@ -3694,7 +3711,7 @@ async function generateChunkTerrain(data, localCX, localCZ) {
             await carveMountainCaves()
             await addTrees()
             await pruneFloatingArtifacts()
-            await pruneFloatingWater()
+            await fillWaterBodiesForChunk()
             applySavedRegionStateForChunk(data.pendingRegionState, bounds)
             await flowWaterDownhill()
             if (epoch !== worldGenerationEpoch) throw new Error('Chunk generation superseded by a new world')
