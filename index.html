@@ -936,7 +936,7 @@ function isBeachSandAt(x, z, h) {
             const nx = x + dx, nz = z + dz
             if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue
             const neighborCol = ci(nx, nz)
-            if (heights[neighborCol] > seaLevel) continue
+            if ((heights[neighborCol] || terrainHeight(nx, nz)) > seaLevel) continue
             const neighborMask = islandInfluenceAt(nx, nz)
             if (neighborMask < Math.min(0.65, currentMask - 0.025)) {
                 outerOceanCoast = true
@@ -1395,13 +1395,13 @@ function isFreshWaterColumnAt(x, z) {
         }
     }
 
-    if (heights[ci(x, z)] > seaLevel) return false
+    if ((heights[ci(x, z)] || terrainHeight(x, z)) > seaLevel) return false
     for (let dx = -4; dx <= 4; dx++) {
         for (let dz = -4; dz <= 4; dz++) {
             if (dx * dx + dz * dz > 16) continue
             const nx = x + dx, nz = z + dz
             if (nx < 0 || nx >= N || nz < 0 || nz >= N) continue
-            if (heights[ci(nx, nz)] > seaLevel && islandInfluenceAt(nx, nz) > 0.32) return true
+            if ((heights[ci(nx, nz)] || terrainHeight(nx, nz)) > seaLevel && islandInfluenceAt(nx, nz) > 0.32) return true
         }
     }
     return false
@@ -2035,7 +2035,7 @@ async function addTrees() {
                 if (dx * dx + dz * dz > radius * radius) continue
                 const nx = x + dx, nz = z + dz
                 if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
-                if (heights[ci(nx, nz)] <= seaLevel) return true
+                if ((heights[ci(nx, nz)] || terrainHeight(nx, nz)) <= seaLevel) return true
             }
         }
         return false
@@ -2386,8 +2386,8 @@ async function addTrees() {
 
     const ancientRuinPlacement = await placeAncientRuin()
 
-    for (let x = Math.max(3, bounds.x0); x < Math.min(N - 3, bounds.x1); x++) {
-        for (let z = Math.max(3, bounds.z0); z < Math.min(N - 3, bounds.z1); z++) {
+    for (let x = Math.max(3, bounds.x0 + 3); x < Math.min(N - 3, bounds.x1 - 3); x++) {
+        for (let z = Math.max(3, bounds.z0 + 3); z < Math.min(N - 3, bounds.z1 - 3); z++) {
             const col = ci(x,z), h = heights[col]
             if (isInsideStructureFootprint(x, z)) continue
             if (get(x,h,z) !== SAND || desertInfluenceAt(x,z) < 0.42) continue
@@ -2396,8 +2396,8 @@ async function addTrees() {
         }
         if ((x & 7) === 7) await yieldToBrowser()
     }
-    for (let x = Math.max(3, bounds.x0); x < Math.min(N - 3, bounds.x1); x++) {
-        for (let z = Math.max(3, bounds.z0); z < Math.min(N - 3, bounds.z1); z++) {
+    for (let x = Math.max(3, bounds.x0 + 3); x < Math.min(N - 3, bounds.x1 - 3); x++) {
+        for (let z = Math.max(3, bounds.z0 + 3); z < Math.min(N - 3, bounds.z1 - 3); z++) {
             const col=ci(x,z), h=heights[col]
             if (isInsideStructureFootprint(x, z)) continue
             if (h <= seaLevel || !isGrassBlock(get(x,h,z))) continue
