@@ -414,6 +414,7 @@ let settingsReturnToMenu = false
 let regionGenerationPromises = new Map()
 let regionGenerationQueue = Promise.resolve()
 let regionGenerationStageActive = false
+let activeRegionStageEpoch = -1
 let worldGenerationEpoch = 0
 let chunkBuildBusy = false
 let dirtyWaterChunks = new Set()
@@ -482,7 +483,12 @@ let previousTime = performance.now()
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
 const ci = (x, z) => z * N + x
 const idx = (x, y, z) => (y * N + z) * N + x
-const yieldToBrowser = () => new Promise(resolve => setTimeout(resolve, 0))
+async function yieldToBrowser() {
+    await new Promise(resolve => setTimeout(resolve, 0))
+    if (regionGenerationStageActive && activeRegionStageEpoch !== worldGenerationEpoch) {
+        throw new Error('Region generation superseded by a new world')
+    }
+}
 
 function isCrouching() {
     return keys.has('ControlLeft') || keys.has('ControlRight') ||
@@ -1081,7 +1087,7 @@ function terrainHeight(x, z) {
     return clamp(Math.round(height), 0, H - 8)
 }
 
-function applyOceanRiftsToHeightMap() {
+async function applyOceanRiftsToHeightMap() {
     const seaLevel = oceans.length ? oceans[0].level : 12
     for (const rift of oceanRifts) {
         const minX = Math.max(1, Math.floor(Math.min(rift.x, rift.x + Math.cos(rift.angle) * rift.length) - rift.bend - rift.width - 3))
@@ -1108,6 +1114,7 @@ function applyOceanRiftsToHeightMap() {
                     heights[col] = Math.max(0, heights[col] - Math.ceil((width + 2.5 - distance) * 1.6))
                 }
             }
+            if ((x & 7) === 7) await yieldToBrowser()
         }
     }
 }
@@ -1211,15 +1218,15 @@ async function createPonds() {
             for (let z = z0; z <= z1; z++) {
                 const baseEdge = irregularDistance(x, z, pond)
                 const broadShoreNoise =
-                    (noise(x * 0.037 + pond.x * 0.19, z * 0.037 + pond.z * 0.19) - 0.5) * 0.34
+                    (noise(x * 0.031 + pond.x * 0.19, z * 0.031 + pond.z * 0.19) - 0.5) * 0.62
                 const fineShoreNoise =
                     (noise(x * 0.13 + pond.z * 0.11 + 5.7,
-                        z * 0.13 + pond.x * 0.11 + 9.2) - 0.5) * 0.14
+                        z * 0.13 + pond.x * 0.11 + 9.2) - 0.5) * 0.22
                 const creekWander =
                     Math.sin((x * 0.41 + z * 0.23) + pond.x * 0.09) *
-                    Math.sin((z * 0.31 - x * 0.17) + pond.z * 0.08) * 0.055
+                    Math.sin((z * 0.31 - x * 0.17) + pond.z * 0.08) * 0.095
                 const edge = baseEdge + broadShoreNoise + fineShoreNoise + creekWander
-                if (edge > 1.78) continue
+                if (edge > 1.92) continue
 
                 const col = ci(x, z)
                 const originalHeight = heights[col]
@@ -1483,7 +1490,7 @@ function setFluidVoxel(x, y, z, type) {
     try { set(x, y, z, type) } finally { trackVoxelEdits = tracking }
 }
 
-function flowWaterDownhill() {
+async function flowWaterDownhill() {
     // Seed exposed freshwater surfaces into the general finite-flow solver.
     // There are no preset waterfall outlets or suspended stream columns.
     for (let x = 1; x < N - 1; x++) {
@@ -1511,6 +1518,7 @@ function flowWaterDownhill() {
                 })
             }
         }
+        if ((x & 7) === 7) await yieldToBrowser()
     }
 }
 
@@ -1913,6 +1921,7 @@ async function carveMountainCaves() {
                         }
                     }
                 }
+                if ((x & 7) === 7) await yieldToBrowser()
             }
             if (rand(caveKey + 1117, caveKey + 1123) > 0.38) {
                 const branchAlong = depth * (0.34 + rand(caveKey + 1129, caveKey + 1151) * 0.28)
@@ -3468,6 +3477,7 @@ async function generateRegionData(regionX, regionZ) {
             if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
             const live = captureRegionGlobals()
             regionGenerationStageActive = true
+            activeRegionStageEpoch = epoch
             try {
                 restoreRegionGlobals(work)
                 await action()
@@ -3476,6 +3486,7 @@ async function generateRegionData(regionX, regionZ) {
             } finally {
                 restoreRegionGlobals(live)
                 regionGenerationStageActive = false
+                activeRegionStageEpoch = -1
             }
             await yieldToBrowser()
         }
@@ -3493,8 +3504,8 @@ async function generateRegionData(regionX, regionZ) {
         await runStage(pruneFloatingArtifacts)
         await runStage(pruneFloatingWater)
         await runStage(() => restoreRegionState(regionStateCache.get(key) || null))
-        await runStage(() => {
-            flowWaterDownhill()
+        await runStage(async () => {
+            await flowWaterDownhill()
             trackVoxelEdits = true
         })
 
@@ -3791,7 +3802,7 @@ function recalculateColumnHeight(x, z) {
 }
 
 canvas.addEventListener('mousedown', event => {
-    if (!mouseLocked || event.button !== 0 || mainMenuOpen || settingsOpen) return
+    if (!mouseLocked || event.button !== 0 || mainMenuOpen || settingsOpen || regionGenerationStageActive) return
     const target = raycastVoxel()
     if (!target || target.y <= 0) return
     const cell = idx(target.x, target.y, target.z)
