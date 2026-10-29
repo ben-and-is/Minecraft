@@ -1662,7 +1662,9 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
             (movedHorizontally ? (state.horizontalSteps || 0) + 1 : (state.horizontalSteps || 0)),
         horizontalTicks: movedHorizontally ? 0 : WATER_HORIZONTAL_COOLDOWN_TICKS,
         falling: movedDown,
-        surface: movedDown ? false : !!state.surface
+        // Only the original filled-surface cell bypasses the "water below" merge.
+        // Any moved cell must merge if it reaches a pool, rather than stack above it.
+        surface: false
     })
     markWaterChunkDirty(x, z)
     markWaterChunkDirty(nx, nz)
