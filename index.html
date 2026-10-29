@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Voxel World</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
 <style>
     * {
@@ -60,28 +61,10 @@
         line-height: 1.6;
     }
 
-    @font-face {
-        font-family: "KaTeX UI";
-        src: url("https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/fonts/KaTeX_Main-Regular.woff2") format("woff2");
-        font-style: normal;
-        font-weight: 400;
-        font-display: swap;
-    }
-
-    @font-face {
-        font-family: "KaTeX UI";
-        src: url("https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/fonts/KaTeX_Main-Bold.woff2") format("woff2");
-        font-style: normal;
-        font-weight: 700;
-        font-display: swap;
-    }
-
-    @font-face {
-        font-family: "KaTeX UI";
-        src: url("https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/fonts/KaTeX_Main-Italic.woff2") format("woff2");
-        font-style: italic;
-        font-weight: 400;
-        font-display: swap;
+    .ui.katex-font-mode,
+    .ui.katex-font-mode * {
+        font-family: KaTeX_Math, KaTeX_Main, serif !important;
+        font-style: italic !important;
     }
 
     canvas {
@@ -152,6 +135,45 @@
     .ui .secondary {
         margin-left: 8px;
         background: #34475d;
+    }
+
+    .katex-preview {
+        margin-top: 14px;
+        padding: 12px 10px;
+        border: 1px solid #ffffff25;
+        border-radius: 10px;
+        background: #070d18b8;
+        color: #e9f1ff;
+        text-align: center;
+        overflow-x: auto;
+    }
+
+    #perfOverlay {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        z-index: 20;
+        min-width: 238px;
+        padding: 9px 11px;
+        border: 1px solid #ffffff25;
+        border-radius: 9px;
+        background: #07111de8;
+        color: #d9e8f5;
+        font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        white-space: pre;
+        pointer-events: none;
+        backdrop-filter: blur(6px);
+        box-shadow: 0 5px 20px #0003;
+    }
+
+    @media (max-width: 600px) {
+        #perfOverlay {
+            top: auto;
+            right: 8px;
+            bottom: 8px;
+            min-width: 0;
+            font-size: 10px;
+        }
     }
 
     .menu-screen {
@@ -232,6 +254,12 @@
         <div id="status">Click the world to capture the mouse.</div>
     </div>
     <div id="crosshair"></div>
+    <div id="perfOverlay" aria-hidden="true">FPS: --
+Chunks: --
+Meshes: --
+Water: --
+Chunk build: --
+Water mesh: --</div>
     <div id="mainMenu" class="menu-screen" role="dialog" aria-modal="true" aria-labelledby="menuTitle">
         <div class="menu-card">
             <div class="menu-kicker">Procedural voxel exploration</div>
@@ -258,7 +286,8 @@
                 <option value="webdings">Webdings 😈 (if installed)</option>
                 <option value="sha256">SHA-256 hash display</option>
             </select>
-            <p class="settings-note">Monospace uses a coding-style font. KaTeX mode loads the KaTeX Main text fonts directly; the KaTeX stylesheet is also included for math typography. Webdings depends on installed fonts. SHA-256 displays one-way text digests in sans-serif.</p>
+            <p class="settings-note">KaTeX Math mode uses the math italic fonts defined by the linked stylesheet. The preview below is rendered by KaTeX itself. The stylesheet alone styles rendered formulas; it is not a font file.</p>
+            <div id="katexPreview" class="katex-preview" aria-label="KaTeX equation preview">E = mc²</div>
             <div class="menu-actions">
                 <button id="settingsDoneBtn" type="button">Done</button>
             </div>
@@ -272,7 +301,7 @@
 const canvas = document.getElementById('c')
 const status = document.getElementById('status')
 const engine = new BABYLON.Engine(canvas, false, { preserveDrawingBuffer: false, stencil: false }, false)
-engine.setHardwareScalingLevel(1.15)
+engine.setHardwareScalingLevel(1.35)
 const scene = new BABYLON.Scene(engine)
 
 scene.clearColor = new BABYLON.Color4(.53, .81, .92, 1)
@@ -449,6 +478,11 @@ let activeRegionStageEpoch = -1
 let worldGenerationEpoch = 0
 let chunkBuildBusy = false
 let dirtyWaterChunks = new Set()
+let lastWaterMeshUpdateByChunk = new Map()
+let lastChunkBuildMs = 0
+let lastWaterStepMs = 0
+let lastWaterMeshMs = 0
+let lastPerfOverlayUpdate = 0
 let waterPhysicsAccumulator = 0
 let waterPhysicsCursor = 0
 let chunkLoadStatusActive = false
@@ -1489,7 +1523,7 @@ async function voxelize() {
 
 
 const WATER_STEP_INTERVAL = 0.04
-const WATER_CELLS_PER_STEP = 512
+const WATER_CELLS_PER_STEP = 96
 let waterPhysicsSnapshot = []
 let waterPhysicsSnapshotCursor = 0
 let waterPhysicsSnapshotMap = null
@@ -1521,7 +1555,21 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
             if (nx < 1 || nx >= N - 1 || nz < 1 || nz >= N - 1) continue
             for (let dy = -1; dy <= 1; dy++) {
                 const ny = y + dy
-                if (ny < 1 || ny >= H || !isWaterBlock(get(nx, ny, nz))) continue
+                const type = get(nx, ny, nz)
+                if (ny < 1 || ny >= H || !isWaterBlock(type)) continue
+
+                const belowIsWater = isWaterBlock(get(nx, ny - 1, nz))
+                let exposed = get(nx, ny + 1, nz) === EMPTY || get(nx, ny - 1, nz) === EMPTY
+                if (!exposed) {
+                    for (const [sx, sz] of WATER_DIRECTIONS) {
+                        if (get(nx + sx, ny, nz + sz) === EMPTY) {
+                            exposed = true
+                            break
+                        }
+                    }
+                }
+                if (!exposed) continue
+
                 const cell = idx(nx, ny, nz)
                 const state = flowingWater.get(cell)
                 if (state) {
@@ -1529,11 +1577,13 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
                     state.horizontalSteps = 0
                     state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
                     state.falling = false
+                    state.surface = belowIsWater
                 } else {
                     flowingWater.set(cell, {
                         horizontalSteps: 0,
                         horizontalTicks: resetReach ? WATER_HORIZONTAL_COOLDOWN_TICKS : 0,
-                        falling: false
+                        falling: false,
+                        surface: belowIsWater
                     })
                 }
             }
@@ -1570,42 +1620,9 @@ function setFluidVoxel(x, y, z, type) {
 }
 
 async function flowWaterDownhill() {
-    // The complete water volume is filled before this pass. Activate only exposed
-    // surface cells; ocean/lake interiors stay stable and cheap to render.
-    const bounds = getActiveGenerationBounds()
-    for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
-        for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
-            const col = ci(x, z)
-            const surfaceY = waterLevels[col]
-            if (surfaceY < 1 || surfaceY >= H) continue
-            if (!isWaterBlock(get(x, surfaceY, z))) continue
-
-            let exposed = false
-            for (const [dx, dz] of WATER_DIRECTIONS) {
-                const nx = x + dx, nz = z + dz
-                if (nx < bounds.x0 || nx >= bounds.x1 || nz < bounds.z0 || nz >= bounds.z1) continue
-                if (get(nx, surfaceY, nz) === EMPTY) {
-                    exposed = true
-                    break
-                }
-            }
-            if (!exposed && get(x, surfaceY - 1, z) !== EMPTY) continue
-
-            const cell = idx(x, surfaceY, z)
-            const surfaceState = flowingWater.get(cell)
-            if (surfaceState) {
-                surfaceState.surface = true
-            } else {
-                flowingWater.set(cell, {
-                    horizontalSteps: 0,
-                    horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
-                    falling: false,
-                    surface: true
-                })
-            }
-        }
-        if ((x & 7) === 7) await yieldToBrowser()
-    }
+    // Do not enqueue every natural lake/ocean shoreline for perpetual physics.
+    // Static bodies stay cheap; mining a block wakes only exposed nearby water,
+    // and the one-block click test adds its single voxel directly to the solver.
 }
 
 function findNearestWaterDropStep(x, y, z, maxHorizontalSteps) {
@@ -1668,8 +1685,6 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
     })
     markWaterChunkDirty(x, z)
     markWaterChunkDirty(nx, nz)
-    wakeAdjacentWaterCells(x, y, z, 1, false)
-    wakeAdjacentWaterCells(nx, ny, nz, 1, false)
     return true
 }
 
@@ -1803,6 +1818,9 @@ function updateWaterPhysics(dt) {
 async function processDirtyWaterChunks() {
     if (chunkBuildBusy || worldTransitioning || settingsOpen || !dirtyWaterChunks.size) return
     const key = dirtyWaterChunks.values().next().value
+    const now = performance.now()
+    const lastUpdate = lastWaterMeshUpdateByChunk.get(key)
+    if (lastUpdate !== undefined && now - lastUpdate < 90) return
     dirtyWaterChunks.delete(key)
     if (!desiredChunkKeys.has(key) || !chunkMeshes.has(key)) return
 
@@ -1815,6 +1833,8 @@ async function processDirtyWaterChunks() {
         mesh.material === materials[WATER] || mesh.material === materials[FRESH_WATER]
     )
     const [cx, cz] = key.split(',').map(Number)
+    const waterMeshStartedAt = performance.now()
+    lastWaterMeshUpdateByChunk.set(key, waterMeshStartedAt)
     chunkBuildBusy = true
     try {
         const replacementWaterMeshes = await buildChunk(cx, cz, true)
@@ -1837,6 +1857,7 @@ async function processDirtyWaterChunks() {
         if (buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(key)) dirtyWaterChunks.add(key)
         if (buildEpoch === worldGenerationEpoch) console.error('Could not rebuild water-updated chunk ' + key, error)
     } finally {
+        lastWaterMeshMs = performance.now() - waterMeshStartedAt
         chunkBuildBusy = false
     }
 }
@@ -3053,6 +3074,7 @@ async function processChunkBuildQueue() {
     status.textContent = 'Seed: ' + seed + '. Loading nearby chunks: ' +
         chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
 
+    const buildStartedAt = performance.now()
     try {
         const builtMeshes = await buildChunk(chunk.cx, chunk.cz)
         if (builtMeshes && buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
@@ -3072,6 +3094,7 @@ async function processChunkBuildQueue() {
         console.error('Could not build chunk ' + chunk.key, error)
         status.textContent = 'Loading chunk ' + chunk.key + ' will retry. ' + error.message
     } finally {
+        lastChunkBuildMs = performance.now() - buildStartedAt
         chunkBuildBusy = false
     }
 }
@@ -3539,7 +3562,7 @@ function hideMainMenu() {
 const GAME_FONT_STACKS = {
     "sans-serif": "Arial, Helvetica, sans-serif",
     "monospace": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-    "katex": "'KaTeX UI', 'KaTeX_Main', serif",
+    "katex": "KaTeX_Math, KaTeX_Main, serif",
     "webdings": "Webdings, Wingdings, sans-serif",
     "sha256": "Arial, Helvetica, sans-serif"
 }
@@ -3614,6 +3637,8 @@ function disableSha256TextMode() {
 function applyGameFont(value) {
     const known = Object.prototype.hasOwnProperty.call(GAME_FONT_STACKS, value)
     const selected = known ? value : "sans-serif"
+    const gameUi = document.querySelector('.ui')
+    if (gameUi) gameUi.classList.toggle('katex-font-mode', selected === 'katex')
     if (selected === "sha256") {
         document.documentElement.style.setProperty("--game-ui-font", GAME_FONT_STACKS["sans-serif"])
         enableSha256TextMode()
@@ -3999,6 +4024,7 @@ async function generate() {
     desiredChunkKeys = new Set()
     pendingChunkQueue = []
     dirtyWaterChunks = new Set()
+    lastWaterMeshUpdateByChunk.clear()
     chunkLoadStatusActive = true
     lastChunkCenterX = -1
     lastChunkCenterZ = -1
@@ -4262,6 +4288,19 @@ document.getElementById('fontFamily').addEventListener('change', event => {
     applyGameFont(event.target.value)
 })
 
+window.addEventListener('load', () => {
+    const preview = document.getElementById('katexPreview')
+    if (!preview) return
+    if (window.katex) {
+        window.katex.render(String.raw`E = mc^2 \qquad \int_0^1 x^2\,dx = \frac{1}{3}`, preview, {
+            displayMode: true,
+            throwOnError: false
+        })
+    } else {
+        preview.textContent = 'E = mc²   ∫₀¹ x² dx = ⅓'
+    }
+})
+
 generate()
 
 engine.runRenderLoop(() => {
@@ -4272,7 +4311,9 @@ engine.runRenderLoop(() => {
     if (!regionGenerationStageActive && !worldTransitioning) {
         if (!mainMenuOpen && !settingsOpen) {
             updatePlayer(dt)
+            const waterStepStartedAt = performance.now()
             updateWaterPhysics(dt)
+            lastWaterStepMs = performance.now() - waterStepStartedAt
             updateUnderwaterAtmosphere(dt)
             streamToRegion()
         }
@@ -4281,6 +4322,22 @@ engine.runRenderLoop(() => {
         processDirtyWaterChunks()
     }
     scene.render()
+
+    if (now - lastPerfOverlayUpdate >= 400) {
+        lastPerfOverlayUpdate = now
+        const perf = document.getElementById('perfOverlay')
+        if (perf) {
+            perf.textContent = [
+                'FPS: ' + engine.getFps().toFixed(0),
+                'Chunks: ' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS +
+                    ' · queued ' + pendingChunkQueue.length,
+                'Meshes: ' + scene.meshes.length + ' · active water ' + flowingWater.size,
+                'Water CPU: ' + lastWaterStepMs.toFixed(2) + ' ms/frame',
+                'Chunk build: ' + lastChunkBuildMs.toFixed(0) + ' ms last',
+                'Water mesh: ' + lastWaterMeshMs.toFixed(0) + ' ms last'
+            ].join('\\n')
+        }
+    }
 })
 
 window.addEventListener('resize', () => engine.resize())
