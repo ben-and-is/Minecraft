@@ -259,7 +259,7 @@ scene.skipPointerMovePicking = true
 const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_LOG = 8, PALM_LEAVES = 9, PINE_LOG = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
-const CHUNK_RENDER_RADIUS = 3
+const CHUNK_RENDER_RADIUS = 2
 const MAX_CHUNK_BUILDS_PER_FRAME = 1
 const MAX_LOADED_CHUNKS = (() => {
     let count = 0
@@ -366,7 +366,10 @@ const materials = colors.map((color, i) => {
     const m = new BABYLON.StandardMaterial('mat' + i, scene)
     m.diffuseColor = BABYLON.Color3.FromHexString(color)
     m.specularColor = BABYLON.Color3.Black()
-    m.backFaceCulling = i !== WATER && i !== FRESH_WATER
+    // Greedy quads have correct outward normals, but browser/GPU winding conventions
+    // can differ with the engine's left-handed scene. Render both sides so valid faces
+    // cannot disappear due to back-face culling.
+    m.backFaceCulling = false
 
     if (i === WATER || i === FRESH_WATER) {
         m.diffuseColor = i === FRESH_WATER
