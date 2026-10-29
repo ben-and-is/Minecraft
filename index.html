@@ -60,6 +60,30 @@
         line-height: 1.6;
     }
 
+    @font-face {
+        font-family: "KaTeX UI";
+        src: url("https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/fonts/KaTeX_Main-Regular.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 400;
+        font-display: swap;
+    }
+
+    @font-face {
+        font-family: "KaTeX UI";
+        src: url("https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/fonts/KaTeX_Main-Bold.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 700;
+        font-display: swap;
+    }
+
+    @font-face {
+        font-family: "KaTeX UI";
+        src: url("https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/fonts/KaTeX_Main-Italic.woff2") format("woff2");
+        font-style: italic;
+        font-weight: 400;
+        font-display: swap;
+    }
+
     canvas {
         display: block;
         width: 100%;
@@ -203,7 +227,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Left-click a block while the mouse is captured to mine it and open new water paths. Natural freshwater and saltwater, gravity-driven flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk streamed view radius. Press Esc to open the menu.</p>
+        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Left-click while the mouse is captured to spawn one test water block; Shift+left-click mines blocks. Natural freshwater and saltwater, gravity-driven flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk streamed view radius. Press Esc to open the menu.</p>
         <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button><button id="settingsBtn" class="secondary" type="button">Settings</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -234,7 +258,7 @@
                 <option value="webdings">Webdings 😈 (if installed)</option>
                 <option value="sha256">SHA-256 hash display</option>
             </select>
-            <p class="settings-note">Monospace uses a coding-style font stack. KaTeX adds math typesetting fonts and styles; it is intended for mathematical notation. Webdings depends on installed fonts. SHA-256 is a one-way hash, not encryption or a font, and displays text digests in sans-serif.</p>
+            <p class="settings-note">Monospace uses a coding-style font. KaTeX mode loads the KaTeX Main text fonts directly; the KaTeX stylesheet is also included for math typography. Webdings depends on installed fonts. SHA-256 displays one-way text digests in sans-serif.</p>
             <div class="menu-actions">
                 <button id="settingsDoneBtn" type="button">Done</button>
             </div>
@@ -1568,11 +1592,15 @@ async function flowWaterDownhill() {
             if (!exposed && get(x, surfaceY - 1, z) !== EMPTY) continue
 
             const cell = idx(x, surfaceY, z)
-            if (!flowingWater.has(cell)) {
+            const surfaceState = flowingWater.get(cell)
+            if (surfaceState) {
+                surfaceState.surface = true
+            } else {
                 flowingWater.set(cell, {
                     horizontalSteps: 0,
                     horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
-                    falling: false
+                    falling: false,
+                    surface: true
                 })
             }
         }
@@ -1633,7 +1661,8 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
         horizontalSteps: movedDown ? 0 :
             (movedHorizontally ? (state.horizontalSteps || 0) + 1 : (state.horizontalSteps || 0)),
         horizontalTicks: movedHorizontally ? 0 : WATER_HORIZONTAL_COOLDOWN_TICKS,
-        falling: movedDown
+        falling: movedDown,
+        surface: movedDown ? false : !!state.surface
     })
     markWaterChunkDirty(x, z)
     markWaterChunkDirty(nx, nz)
@@ -1662,12 +1691,17 @@ function simulateWaterCell(cell, state) {
             moveFlowingWater(x, y, z, x, y - 1, z, state, type)
             return
         }
-        if (isWaterBlock(below)) {
-            // Water landing on an existing pool joins its surface and becomes stable.
-            // Keep the voxel: consuming it here made streams vanish at lake surfaces.
+        if (isWaterBlock(below) && !state.surface) {
+            // A moving droplet merges into an existing water column instead of
+            // leaving a second, unsupported block stacked on top of the pool.
             flowingWater.delete(cell)
+            setFluidVoxel(x, y, z, EMPTY)
+            markWaterChunkDirty(x, z)
+            wakeAdjacentWaterCells(x, y, z, 1, false)
             return
         }
+        // Surface cells often have water directly beneath them. They must still
+        // reach the horizontal-flow logic below or lakes and oceans never spill.
     }
 
     const remainingHorizontal = WATER_MAX_HORIZONTAL_STEPS -
@@ -1772,20 +1806,26 @@ async function processDirtyWaterChunks() {
 
     const buildEpoch = worldGenerationEpoch
     const previous = chunkMeshes.get(key)
+    const previousSolidMeshes = previous.filter(mesh =>
+        mesh.material !== materials[WATER] && mesh.material !== materials[FRESH_WATER]
+    )
+    const previousWaterMeshes = previous.filter(mesh =>
+        mesh.material === materials[WATER] || mesh.material === materials[FRESH_WATER]
+    )
     const [cx, cz] = key.split(',').map(Number)
     chunkBuildBusy = true
     try {
-        const replacement = await buildChunk(cx, cz)
-        if (!replacement) return
+        const replacementWaterMeshes = await buildChunk(cx, cz, true)
+        if (!replacementWaterMeshes) return
         if (buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(key) && chunkMeshes.get(key) === previous) {
-            chunkMeshes.set(key, replacement)
-            for (const mesh of previous) {
+            chunkMeshes.set(key, previousSolidMeshes.concat(replacementWaterMeshes))
+            for (const mesh of previousWaterMeshes) {
                 mesh.dispose()
                 const index = meshes.indexOf(mesh)
                 if (index >= 0) meshes.splice(index, 1)
             }
         } else {
-            for (const mesh of replacement) {
+            for (const mesh of replacementWaterMeshes) {
                 mesh.dispose()
                 const index = meshes.indexOf(mesh)
                 if (index >= 0) meshes.splice(index, 1)
@@ -1798,7 +1838,6 @@ async function processDirtyWaterChunks() {
         chunkBuildBusy = false
     }
 }
-
 
 async function carveSurfaceFissures() {
     const seaLevel = oceans[0].level
@@ -2763,7 +2802,7 @@ function getChunkDecorationBuffers(data, chunkX, chunkZ) {
     }
 }
 
-async function buildChunk(cx, cz) {
+async function buildChunk(cx, cz, waterOnly = false) {
     const buildEpoch = worldGenerationEpoch
     const key = cx + ',' + cz
     const regionX = Math.floor(cx / CHUNKS_PER_AXIS)
@@ -2815,6 +2854,17 @@ async function buildChunk(cx, cz) {
         }
     }
 
+    // Dynamic water can be placed above the static terrain surface (for example
+    // while flying), so a water-only mesh must include every active water voxel.
+    if (waterOnly && data.flowingWater) {
+        for (const cell of data.flowingWater.keys()) {
+            const x = cell % N
+            const row = Math.floor(cell / N)
+            const z = row % N
+            const y = Math.floor(row / N)
+            if (x >= x0 && x < x1 && z >= z0 && z < z1) maxY = Math.max(maxY, y)
+        }
+    }
     const dimensions = [x1 - x0, maxY + 1, z1 - z0]
     const faceVisible = (type, neighbor) => isWaterBlock(type)
         ? neighbor === EMPTY
@@ -2849,8 +2899,8 @@ async function buildChunk(cx, cz) {
                     let code = 0
                     // The face is owned by the inside voxel and is omitted only
                     // when a neighboring solid block truly covers it.
-                    if (aInside && a !== EMPTY && faceVisible(a, b)) code = a + 1
-                    else if (bInside && b !== EMPTY && faceVisible(b, a)) code = -(b + 1)
+                    if (aInside && a !== EMPTY && (!waterOnly || isWaterBlock(a)) && faceVisible(a, b)) code = a + 1
+                    else if (bInside && b !== EMPTY && (!waterOnly || isWaterBlock(b)) && faceVisible(b, a)) code = -(b + 1)
                     mask[n++] = code
                 }
             }
@@ -2914,9 +2964,12 @@ async function buildChunk(cx, cz) {
     }
 
     for (let type = 0; type < MCOUNT; type++) {
+        if (waterOnly && !isWaterBlock(type)) continue
         createBufferedMesh('chunk_' + cx + '_' + cz + '_' + type,
             groups[type], materials[type], chunkList, isWaterBlock(type), offsetX, offsetZ)
     }
+
+    if (waterOnly) return chunkList
 
     const decorationBuffers = getChunkDecorationBuffers(data, localCX, localCZ)
     if (decorationBuffers) {
@@ -3484,7 +3537,7 @@ function hideMainMenu() {
 const GAME_FONT_STACKS = {
     "sans-serif": "Arial, Helvetica, sans-serif",
     "monospace": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-    "katex": "'KaTeX_Main', 'KaTeX_Main-Regular', serif",
+    "katex": "'KaTeX UI', 'KaTeX_Main', serif",
     "webdings": "Webdings, Wingdings, sans-serif",
     "sha256": "Arial, Helvetica, sans-serif"
 }
@@ -4118,12 +4171,20 @@ function raycastVoxel(maxDistance = 6) {
         z: playerZ
     }
     const stepSize = 0.04
+    let place = null
+    let previousKey = ''
     for (let distance = 0.12; distance <= maxDistance; distance += stepSize) {
         const x = Math.floor(origin.x + direction.x * distance)
         const y = Math.floor(origin.y + direction.y * distance)
         const z = Math.floor(origin.z + direction.z * distance)
+        const key = x + ',' + y + ',' + z
+        if (key === previousKey) continue
+        previousKey = key
         const type = get(x, y, z)
-        if (type !== EMPTY) return { x, y, z, type }
+        if (type !== EMPTY) return { x, y, z, type, place }
+        if (x >= 0 && x < N && z >= 0 && z < N && y >= 0 && y < H) {
+            place = { x, y, z }
+        }
     }
     return null
 }
@@ -4144,13 +4205,45 @@ function recalculateColumnHeight(x, z) {
 canvas.addEventListener('mousedown', event => {
     if (!mouseLocked || event.button !== 0 || mainMenuOpen || settingsOpen || regionGenerationStageActive) return
     const target = raycastVoxel()
-    if (!target || target.y <= 0) return
-    const cell = idx(target.x, target.y, target.z)
-    if (isWaterBlock(target.type)) flowingWater.delete(cell)
-    set(target.x, target.y, target.z, EMPTY)
-    recalculateColumnHeight(target.x, target.z)
-    markWaterChunkDirty(target.x, target.z)
-    status.textContent = 'Block mined. Nearby water is rechecking open paths.'
+
+    if (event.shiftKey) {
+        if (!target || target.y <= 0) return
+        const minedCell = idx(target.x, target.y, target.z)
+        if (isWaterBlock(target.type)) flowingWater.delete(minedCell)
+        set(target.x, target.y, target.z, EMPTY)
+        recalculateColumnHeight(target.x, target.z)
+        markWaterChunkDirty(target.x, target.z)
+        waterPhysicsSnapshot = []
+        waterPhysicsSnapshotCursor = 0
+        status.textContent = 'Block mined. Shift-click to mine; left-click to spawn one test water block.'
+        return
+    }
+
+    const place = target && target.place
+    if (!place || place.y < 0 || place.y >= H ||
+        place.x < 0 || place.x >= N || place.z < 0 || place.z >= N ||
+        get(place.x, place.y, place.z) !== EMPTY) {
+        status.textContent = 'Aim at a block within 6 blocks to spawn one test water block.'
+        return
+    }
+
+    setFluidVoxel(place.x, place.y, place.z, WATER)
+    const cell = idx(place.x, place.y, place.z)
+    flowingWater.set(cell, {
+        horizontalSteps: 0,
+        horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+        falling: false,
+        surface: false,
+        testBlock: true
+    })
+    waterPhysicsSnapshot = []
+    waterPhysicsSnapshotCursor = 0
+    waterPhysicsSnapshotMap = flowingWater
+    wakeAdjacentWaterCells(place.x, place.y, place.z, 1, false)
+    markWaterChunkDirty(place.x, place.z)
+    status.textContent = 'Spawned 1 test water block at ' +
+        place.x + ', ' + place.y + ', ' + place.z +
+        '. Watch it fall and flow; Shift-click mines blocks.'
 })
 
 document.getElementById('g').addEventListener('click', startNewWorld)
