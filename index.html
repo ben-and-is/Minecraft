@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Voxel World</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
 <style>
     * {
@@ -202,7 +203,7 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Left-click a block while the mouse is captured to mine it and open new water paths. Natural freshwater and saltwater, gravity-driven flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 5-chunk streamed view radius.</p>
+        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Left-click a block while the mouse is captured to mine it and open new water paths. Natural freshwater and saltwater, gravity-driven flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk streamed view radius. Press Esc to open the menu.</p>
         <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button><button id="settingsBtn" class="secondary" type="button">Settings</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -217,7 +218,7 @@
                 <button id="newWorldBtn" class="secondary" type="button">New World</button>
                 <button id="settingsMenuBtn" class="secondary" type="button">Settings</button>
             </div>
-            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Water falls under gravity and spreads over reachable ground, with finite horizontal reach.</div>
+            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Esc: open the menu. Water falls under gravity and spreads over reachable ground.</div>
         </div>
     </div>
     <div id="settingsPage" class="menu-screen settings-screen" style="display:none" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
@@ -229,11 +230,11 @@
             <select id="fontFamily">
                 <option value="sans-serif">Sans-serif (default)</option>
                 <option value="monospace">Monospace</option>
-                <option value="old-english">Old English Text MT</option>
+                <option value="katex">KaTeX (math typography)</option>
                 <option value="webdings">Webdings 😈 (if installed)</option>
                 <option value="sha256">SHA-256 hash display</option>
             </select>
-            <p class="settings-note">Old English Text MT and Webdings depend on fonts installed on your device. SHA-256 is a one-way hash, not encryption or a font. This mode replaces in-game information text with SHA-256 digests shown in sans-serif; action buttons stay readable. Select Sans-serif to restore the original text.</p>
+            <p class="settings-note">Monospace uses a coding-style font stack. KaTeX adds math typesetting fonts and styles; it is intended for mathematical notation. Webdings depends on installed fonts. SHA-256 is a one-way hash, not encryption or a font, and displays text digests in sans-serif.</p>
             <div class="menu-actions">
                 <button id="settingsDoneBtn" type="button">Done</button>
             </div>
@@ -259,7 +260,7 @@ scene.skipPointerMovePicking = true
 const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_LOG = 8, PALM_LEAVES = 9, PINE_LOG = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
-const CHUNK_RENDER_RADIUS = 2
+const CHUNK_RENDER_RADIUS = 4
 const MAX_CHUNK_BUILDS_PER_FRAME = 1
 const MAX_LOADED_CHUNKS = (() => {
     let count = 0
@@ -1330,6 +1331,11 @@ async function createRiverChannels() {
         for (let segment = 0; segment < points.length - 1; segment++) {
             const a = points[segment]
             const b = points[segment + 1]
+            const segmentMargin = widthBase + 6
+            if (Math.max(a.x, b.x) + segmentMargin < bounds.x0 ||
+                Math.min(a.x, b.x) - segmentMargin >= bounds.x1 ||
+                Math.max(a.z, b.z) + segmentMargin < bounds.z0 ||
+                Math.min(a.z, b.z) - segmentMargin >= bounds.z1) continue
             const length = Math.hypot(b.x - a.x, b.z - a.z)
             const samples = Math.max(1, Math.ceil(length * 2))
 
@@ -1389,14 +1395,19 @@ function isFreshWaterColumnAt(x, z) {
         if (pond.disabled) continue
         if (irregularDistance(x, z, pond) < 1.52) return true
         if (!pond.riverPath) continue
+        const riverBand = pond.kind === 'large' ? 5.2 : 3.6
+        const centerX = x + 0.5, centerZ = z + 0.5
         for (let i = 0; i < pond.riverPath.length - 1; i++) {
             const a = pond.riverPath[i], b = pond.riverPath[i + 1]
+            if (centerX < Math.min(a.x, b.x) - riverBand ||
+                centerX > Math.max(a.x, b.x) + riverBand ||
+                centerZ < Math.min(a.z, b.z) - riverBand ||
+                centerZ > Math.max(a.z, b.z) + riverBand) continue
             const vx = b.x - a.x, vz = b.z - a.z
             const length2 = vx * vx + vz * vz || 1
             const t = clamp(((x + 0.5 - a.x) * vx + (z + 0.5 - a.z) * vz) / length2, 0, 1)
             const px = a.x + vx * t, pz = a.z + vz * t
-            const riverBand = pond.kind === 'large' ? 5.2 : 3.6
-            if (Math.hypot(x + 0.5 - px, z + 0.5 - pz) < riverBand) return true
+            if (Math.hypot(centerX - px, centerZ - pz) < riverBand) return true
         }
     }
 
@@ -1441,9 +1452,10 @@ async function voxelize() {
         for (let z = bounds.z0; z < bounds.z1; z++) {
             const col = ci(x, z)
             const level = waterLevels[col]
-            if (level === EMPTY) continue
+            const floor = heights[col]
+            if (level === EMPTY || level <= floor) continue
             const waterType = isFreshWaterColumnAt(x, z) ? FRESH_WATER : WATER
-            for (let y = heights[col] + 1; y <= level; y++) {
+            for (let y = floor + 1; y <= level; y++) {
                 if (get(x, y, z) === EMPTY) set(x, y, z, waterType)
             }
         }
@@ -2929,15 +2941,6 @@ function unloadChunk(key) {
     chunkMeshes.delete(key)
 }
 
-function markAdjacentLoadedChunksDirty(cx, cz) {
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const neighborKey = (cx + dx) + ',' + (cz + dz)
-        if (chunkMeshes.has(neighborKey) && desiredChunkKeys.has(neighborKey)) {
-            dirtyWaterChunks.add(neighborKey)
-        }
-    }
-}
-
 function updateChunkLoading(force = false) {
     const centerX = worldRegionX * CHUNKS_PER_AXIS + Math.floor(playerX / CS)
     const centerZ = worldRegionZ * CHUNKS_PER_AXIS + Math.floor(playerZ / CS)
@@ -2999,7 +3002,6 @@ async function processChunkBuildQueue() {
         const builtMeshes = await buildChunk(chunk.cx, chunk.cz)
         if (builtMeshes && buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
             chunkMeshes.set(chunk.key, builtMeshes)
-            markAdjacentLoadedChunksDirty(chunk.cx, chunk.cz)
         } else if (builtMeshes) {
             for (const mesh of builtMeshes) {
                 mesh.dispose()
@@ -3481,8 +3483,8 @@ function hideMainMenu() {
 
 const GAME_FONT_STACKS = {
     "sans-serif": "Arial, Helvetica, sans-serif",
-    "monospace": "'Courier New', Consolas, monospace",
-    "old-english": "'Old English Text MT', 'UnifrakturCook', 'Blackletter', serif",
+    "monospace": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+    "katex": "'KaTeX_Main', 'KaTeX_Main-Regular', serif",
     "webdings": "Webdings, Wingdings, sans-serif",
     "sha256": "Arial, Helvetica, sans-serif"
 }
@@ -4034,6 +4036,19 @@ async function generate() {
     }
 }
 window.addEventListener('keydown', e => {
+    if (e.code === 'Escape') {
+        e.preventDefault()
+        keys.clear()
+        jumpQueued = false
+        lastSpaceTapTime = 0
+        if (settingsOpen) {
+            closeSettings()
+        } else if (!mainMenuOpen) {
+            showMainMenu()
+        }
+        return
+    }
+
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
         e.preventDefault()
     }
