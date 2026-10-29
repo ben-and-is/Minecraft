@@ -21,20 +21,50 @@
 
     body {
         overflow: hidden;
-        font-family: Arial, Helvetica, sans-serif;
+        font-family: var(--game-ui-font, KaTeX_Math, KaTeX_Main, serif);
         background: #87ceeb;
+    }
+
+    button,
+    input,
+    textarea,
+    select {
+        font-family: inherit;
+        font-style: inherit;
     }
 
     .ui,
     .ui * {
-        font-family: var(--game-ui-font, Arial, Helvetica, sans-serif);
+        font-family: var(--game-ui-font, KaTeX_Math, KaTeX_Main, serif);
     }
 
-    .menu-screen,
-    .menu-screen *,
+    .menu-screen:not(.settings-screen),
+    .menu-screen:not(.settings-screen) *,
     #settingsBtn,
-    #settingsMenuBtn {
+    #settingsMenuBtn,
+    #perfOverlay {
+        font-family: var(--game-ui-font, KaTeX_Math, KaTeX_Main, serif) !important;
+    }
+
+    html.katex-font-mode body,
+    html.katex-font-mode body .ui,
+    html.katex-font-mode body .ui *,
+    html.katex-font-mode #mainMenu,
+    html.katex-font-mode #mainMenu *,
+    html.katex-font-mode #settingsBtn,
+    html.katex-font-mode #g,
+    html.katex-font-mode #m,
+    html.katex-font-mode #perfOverlay {
+        font-family: KaTeX_Math, KaTeX_Main, serif !important;
+        font-style: italic !important;
+    }
+
+    .settings-screen,
+    .settings-screen .menu-card,
+    .settings-screen .menu-card > *:not(#katexPreview),
+    .settings-screen .menu-card > *:not(#katexPreview) * {
         font-family: Arial, Helvetica, sans-serif !important;
+        font-style: normal !important;
     }
 
     .settings-screen select {
@@ -53,12 +83,6 @@
         display: block;
         margin-top: 22px;
         font-weight: 700;
-    }
-
-    .settings-screen .settings-note {
-        color: #c7d3e1;
-        font-size: 13px;
-        line-height: 1.6;
     }
 
     .ui.katex-font-mode,
@@ -286,7 +310,6 @@ Water mesh: --</div>
                 <option value="webdings">Webdings 😈 (if installed)</option>
                 <option value="sha256">SHA-256 hash display</option>
             </select>
-            <p class="settings-note">KaTeX Math mode uses the math italic fonts defined by the linked stylesheet. The preview below is rendered by KaTeX itself. The stylesheet alone styles rendered formulas; it is not a font file.</p>
             <div id="katexPreview" class="katex-preview" aria-label="KaTeX equation preview">E = mc²</div>
             <div class="menu-actions">
                 <button id="settingsDoneBtn" type="button">Done</button>
@@ -314,16 +337,6 @@ const N = 256, H = 96, CS = 16, YOFF = -5
 const EMPTY = -1, GRASS = 0, DIRT = 1, STONE = 2, LOG = 3, LEAVES = 4, WATER = 5, SAND = 6, FRESH_WATER = 7, PALM_LOG = 8, PALM_LEAVES = 9, PINE_LOG = 10, DARK_LEAVES = 11, CACTUS = 12, DARK_GRASS = 13
 const MCOUNT = 14
 const CHUNK_RENDER_RADIUS = 4
-const MAX_CHUNK_BUILDS_PER_FRAME = 1
-const MAX_LOADED_CHUNKS = (() => {
-    let count = 0
-    for (let dz = -CHUNK_RENDER_RADIUS; dz <= CHUNK_RENDER_RADIUS; dz++) {
-        for (let dx = -CHUNK_RENDER_RADIUS; dx <= CHUNK_RENDER_RADIUS; dx++) {
-            if (dx * dx + dz * dz <= CHUNK_RENDER_RADIUS * CHUNK_RENDER_RADIUS) count++
-        }
-    }
-    return count
-})()
 const CHUNKS_PER_AXIS = Math.ceil(N / CS)
 const MAX_CACHED_REGION_DATA = 4
 
@@ -3032,14 +3045,28 @@ function updateChunkLoading(force = false) {
         }
     }
     wanted.sort((a, b) => a.distance - b.distance)
-    const limited = wanted.slice(0, MAX_LOADED_CHUNKS)
-    const wantedKeys = new Set(limited.map(chunk => chunk.key))
+    const wantedKeys = new Set(wanted.map(chunk => chunk.key))
     desiredChunkKeys = wantedKeys
 
     for (const key of Array.from(chunkMeshes.keys())) {
         if (!wantedKeys.has(key)) unloadChunk(key)
     }
-    pendingChunkQueue = limited.filter(chunk => !chunkMeshes.has(chunk.key))
+
+    // Preserve queued builds that are still inside the radius. Replacing the
+    // whole queue every time the player crosses a chunk boundary discarded work
+    // and made loading appear to restart. Append only newly needed chunks.
+    const queued = new Map()
+    for (const chunk of pendingChunkQueue) {
+        if (wantedKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
+            queued.set(chunk.key, chunk)
+        }
+    }
+    for (const chunk of wanted) {
+        if (!chunkMeshes.has(chunk.key) && !queued.has(chunk.key)) {
+            queued.set(chunk.key, chunk)
+        }
+    }
+    pendingChunkQueue = Array.from(queued.values())
     lastChunkCenterX = centerX
     lastChunkCenterZ = centerZ
 }
@@ -3063,7 +3090,7 @@ async function processChunkBuildQueue() {
                 : mouseLocked
                     ? 'Mouse captured. Press Esc to release.'
                     : 'World ready. Seed: ' + seed + '. Chunks: ' + chunkMeshes.size +
-                        '/' + MAX_LOADED_CHUNKS + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
+                        '/' + desiredChunkKeys.size + '. View radius: ' + CHUNK_RENDER_RADIUS + ' chunks.'
         }
         return
     }
@@ -3072,7 +3099,7 @@ async function processChunkBuildQueue() {
     chunkBuildBusy = true
     chunkLoadStatusActive = true
     status.textContent = 'Seed: ' + seed + '. Loading nearby chunks: ' +
-        chunkMeshes.size + '/' + MAX_LOADED_CHUNKS + ' · view radius ' + CHUNK_RENDER_RADIUS
+        chunkMeshes.size + '/' + desiredChunkKeys.size + ' · view radius ' + CHUNK_RENDER_RADIUS
 
     const buildStartedAt = performance.now()
     try {
@@ -3637,8 +3664,7 @@ function disableSha256TextMode() {
 function applyGameFont(value) {
     const known = Object.prototype.hasOwnProperty.call(GAME_FONT_STACKS, value)
     const selected = known ? value : "sans-serif"
-    const gameUi = document.querySelector('.ui')
-    if (gameUi) gameUi.classList.toggle('katex-font-mode', selected === 'katex')
+    document.documentElement.classList.toggle('katex-font-mode', selected === 'katex')
     if (selected === "sha256") {
         document.documentElement.style.setProperty("--game-ui-font", GAME_FONT_STACKS["sans-serif"])
         enableSha256TextMode()
@@ -3673,9 +3699,9 @@ function closeSettings() {
 
 try {
     const savedFont = localStorage.getItem('voxelWorldFontFamily')
-    applyGameFont(savedFont || "sans-serif")
+    applyGameFont(!savedFont || savedFont === "sans-serif" ? "katex" : savedFont)
 } catch (_) {
-    applyGameFont("sans-serif")
+    applyGameFont("katex")
 }
 
 function captureRegionGlobals() {
@@ -4329,7 +4355,7 @@ engine.runRenderLoop(() => {
         if (perf) {
             perf.textContent = [
                 'FPS: ' + engine.getFps().toFixed(0),
-                'Chunks: ' + chunkMeshes.size + '/' + MAX_LOADED_CHUNKS +
+                'Chunks: ' + chunkMeshes.size + '/' + desiredChunkKeys.size +
                     ' · queued ' + pendingChunkQueue.length,
                 'Meshes: ' + scene.meshes.length + ' · active water ' + flowingWater.size,
                 'Water CPU: ' + lastWaterStepMs.toFixed(2) + ' ms/frame',
