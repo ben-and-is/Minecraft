@@ -2795,8 +2795,8 @@ async function buildChunk(cx, cz) {
         for (let x = x0; x < x1; x++) {
             const col = z * N + x
             maxY = Math.max(maxY,
-                Math.min(H - 1, heights[col] + 20),
-                Math.min(H - 1, waterLevels[col]))
+                Math.min(H - 1, data.heights[col] + 20),
+                Math.min(H - 1, data.waterLevels[col]))
         }
     }
 
@@ -2882,8 +2882,10 @@ async function buildChunk(cx, cz) {
                         if (type === LEAVES) group.c.push(1, 1, 1, 1)
                     }
                     group.u.push(0, 0, width, 0, width, height, 0, height)
-                    if (code > 0) group.i.push(base, base + 1, base + 2, base, base + 2, base + 3)
-                    else group.i.push(base, base + 2, base + 1, base, base + 3, base + 2)
+                    // Vertex order already follows the face sign. Reversing
+                    // indices again for negative faces flips their winding back
+                    // to positive and causes back-face culling to hide them.
+                    group.i.push(base, base + 1, base + 2, base, base + 2, base + 3)
 
                     for (let yy = 0; yy < height; yy++) {
                         const row = (j + yy) * sizeU + i
