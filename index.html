@@ -55,7 +55,12 @@
     html.katex-font-mode #g,
     html.katex-font-mode #m,
     html.katex-font-mode #perfOverlay {
-        font-family: KaTeX_Main, KaTeX_Math, serif !important;
+        font-family: KaTeX_Math, KaTeX_Main, serif !important;
+        font-style: italic !important;
+    }
+
+    html.katex-font-mode .upright-digits {
+        font-family: KaTeX_Main, serif !important;
         font-style: normal !important;
     }
 
@@ -189,6 +194,27 @@
         white-space: nowrap;
     }
 
+    .font-name-preview {
+        color: #9bd8c0;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .04em;
+        text-align: center;
+    }
+
+    .upright-digits {
+        font-family: KaTeX_Main, serif !important;
+        font-style: normal !important;
+    }
+
+    .menu-world-status {
+        margin: 14px 0 0;
+        min-height: 20px;
+        color: #c7d3e1;
+        font-size: 13px;
+        line-height: 1.5;
+    }
+
     #startupError {
         position: fixed;
         inset: 0;
@@ -259,8 +285,8 @@
         justify-content: center;
         padding: 24px;
         color: white;
-        background: radial-gradient(ellipse at top, #284c50ee 0%, #0a1322f5 58%, #070c15fa 100%);
-        backdrop-filter: blur(10px);
+        background: radial-gradient(ellipse at top, #284c50a8 0%, #0a1322ba 58%, #070c15d1 100%);
+        backdrop-filter: blur(3px);
     }
 
     .menu-card {
@@ -337,6 +363,7 @@ Water mesh: --</div>
         <div class="menu-card">
             <div class="menu-kicker">Procedural voxel exploration</div>
             <h1 id="menuTitle">Voxel World</h1>
+            <div id="menuWorldStatus" class="menu-world-status" role="status" aria-live="polite">Preparing the world…</div>
             <div class="menu-actions">
                 <button id="playBtn" type="button">Continue Exploring</button>
                 <button id="newWorldBtn" class="secondary" type="button">New World</button>
@@ -357,6 +384,7 @@ Water mesh: --</div>
                 <option value="sha256">SHA-256 hash display</option>
             </select>
             <div id="katexPreview" class="katex-preview" aria-label="Selected font equation preview">
+                <div id="fontNamePreview" class="font-name-preview">KaTeX Math · Italic letters, upright numbers</div>
                 <div id="mathEnergy" class="math-example">E = mc²</div>
                 <div id="mathIntegral" class="math-example">∫₀¹ x² dx = ⅓</div>
             </div>
@@ -3761,7 +3789,7 @@ function hideMainMenu() {
 const GAME_FONT_STACKS = {
     "sans-serif": "Arial, Helvetica, sans-serif",
     "monospace": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-    "katex": "KaTeX_Main, KaTeX_Math, serif",
+    "katex": "KaTeX_Math, KaTeX_Main, serif",
     "webdings": "Webdings, Wingdings, sans-serif",
     "sha256": "Arial, Helvetica, sans-serif"
 }
@@ -3771,6 +3799,7 @@ let sha256TextObserver = null
 let sha256OriginalText = new WeakMap()
 let sha256PendingText = new WeakMap()
 const sha256TextRoot = document.querySelector('.ui')
+let uprightDigitObserver = null
 
 async function sha256Hex(text) {
     const bytes = new TextEncoder().encode(text)
@@ -3833,10 +3862,67 @@ function disableSha256TextMode() {
     sha256PendingText = new WeakMap()
 }
 
+function wrapUprightDigits(root = document.body) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const nodes = []
+    let node
+    while ((node = walker.nextNode())) {
+        if (!/\d/.test(node.data) ||
+            node.parentElement?.closest('script,style,textarea,input,select,.katex,.upright-digits')) continue
+        nodes.push(node)
+    }
+    for (const textNode of nodes) {
+        const pieces = textNode.data.split(/(\d+(?:[.,]\d+)*)/g)
+        if (pieces.length < 2) continue
+        const fragment = document.createDocumentFragment()
+        for (const piece of pieces) {
+            if (!piece) continue
+            if (/^\d+(?:[.,]\d+)*$/.test(piece)) {
+                const span = document.createElement('span')
+                span.className = 'upright-digits'
+                span.textContent = piece
+                fragment.appendChild(span)
+            } else {
+                fragment.appendChild(document.createTextNode(piece))
+            }
+        }
+        textNode.replaceWith(fragment)
+    }
+}
+
+function enableUprightDigits() {
+    wrapUprightDigits()
+    if (!uprightDigitObserver) {
+        uprightDigitObserver = new MutationObserver(() => wrapUprightDigits())
+    }
+    uprightDigitObserver.observe(document.body, {
+        subtree: true,
+        childList: true,
+        characterData: true
+    })
+}
+
+function disableUprightDigits() {
+    if (uprightDigitObserver) uprightDigitObserver.disconnect()
+    for (const span of document.querySelectorAll('.upright-digits')) {
+        span.replaceWith(document.createTextNode(span.textContent || ''))
+    }
+}
+
 function renderFontPreview(fontName) {
     const energy = document.getElementById('mathEnergy')
     const integral = document.getElementById('mathIntegral')
-    if (!energy || !integral) return
+    const fontNameElement = document.getElementById('fontNamePreview')
+    if (!energy || !integral || !fontNameElement) return
+
+    const fontNames = {
+        'sans-serif': 'Arial / Helvetica · Regular',
+        'monospace': 'System Monospace · Regular',
+        'katex': 'KaTeX Math · Italic letters, upright numbers',
+        'webdings': 'Webdings / Wingdings · Symbol font',
+        'sha256': 'SHA-256 text display · Arial'
+    }
+    fontNameElement.textContent = fontNames[fontName] || 'Arial / Helvetica · Regular'
 
     energy.textContent = 'E = mc²'
     integral.textContent = '∫₀¹ x² dx = ⅓'
@@ -3864,10 +3950,13 @@ function applyGameFont(value) {
     const selected = known ? value : "sans-serif"
     document.documentElement.classList.toggle('katex-font-mode', selected === 'katex')
     if (selected === "sha256") {
+        disableUprightDigits()
         document.documentElement.style.setProperty("--game-ui-font", GAME_FONT_STACKS["sans-serif"])
         enableSha256TextMode()
     } else {
         disableSha256TextMode()
+        if (selected === "katex") enableUprightDigits()
+        else disableUprightDigits()
         document.documentElement.style.setProperty("--game-ui-font", GAME_FONT_STACKS[selected])
     }
     document.getElementById('fontFamily').value = selected
@@ -4274,6 +4363,13 @@ async function generate() {
     seed = Math.floor(Math.random() * 2147483646) + 1
     worldSeedBase = seed
     status.textContent = 'Generating terrain in the background…'
+    const menuStatus = document.getElementById('menuWorldStatus')
+    const playButton = document.getElementById('playBtn')
+    if (menuStatus) menuStatus.textContent = 'Generating terrain…'
+    if (playButton) {
+        playButton.disabled = true
+        playButton.textContent = 'Generating…'
+    }
     try {
         const initialRegion = await getRegionData(0, 0)
         if (epoch !== worldGenerationEpoch) return
@@ -4341,12 +4437,33 @@ async function generate() {
         yaw = 0
         pitch = 0
         syncCamera()
+        const spawnChunkKey = spawnCX + ',' + spawnCZ
+        desiredChunkKeys = new Set([spawnChunkKey])
+        document.getElementById('playBtn').disabled = true
+        document.getElementById('playBtn').textContent = 'Building World…'
+        document.getElementById('menuWorldStatus').textContent = 'Building the spawn area…'
+        const spawnMeshes = await buildChunk(spawnCX, spawnCZ)
+        if (epoch !== worldGenerationEpoch) return
+        if (!spawnMeshes || spawnMeshes.length === 0) {
+            throw new Error('The spawn chunk generated no visible terrain meshes.')
+        }
+        chunkMeshes.set(spawnChunkKey, spawnMeshes)
         updateChunkLoading(true)
+        document.getElementById('playBtn').disabled = false
+        document.getElementById('playBtn').textContent = 'Continue Exploring'
+        document.getElementById('menuWorldStatus').textContent = 'World ready · nearby terrain is loading'
         status.textContent = 'Infinite world seed: ' + seed + '. Loading chunks in radius ' + CHUNK_RENDER_RADIUS + '…'
     } catch (error) {
         if (epoch === worldGenerationEpoch) {
             console.error('World generation failed', error)
             status.textContent = 'World generation failed: ' + error.message
+            const menuStatus = document.getElementById('menuWorldStatus')
+            const playButton = document.getElementById('playBtn')
+            if (menuStatus) menuStatus.textContent = 'World generation failed: ' + error.message
+            if (playButton) {
+                playButton.disabled = true
+                playButton.textContent = 'World Failed to Load'
+            }
         }
     } finally {
         if (epoch === worldGenerationEpoch) worldTransitioning = false
