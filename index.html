@@ -2511,6 +2511,101 @@ async function addTrees() {
 
     const lordsMarkPlacement = await placeLordsMark()
 
+    async function placeOminousWell() {
+        if (rand(8123 + worldRegionX * 23, 8129 + worldRegionZ * 31) > 0.90) return null
+        const targetCX = Math.floor(rand(8137 + worldRegionX * 29, 8141 + worldRegionZ * 37) * (CHUNKS_PER_AXIS - 2))
+        const targetCZ = Math.floor(rand(8147 + worldRegionX * 41, 8153 + worldRegionZ * 43) * (CHUNKS_PER_AXIS - 1))
+        if (targetCX !== Math.floor(bounds.x0 / CS) || targetCZ !== Math.floor(bounds.z0 / CS)) return null
+
+        const width = OMINOUS_WELL_STRUCTURE.size[0]
+        const depth = OMINOUS_WELL_STRUCTURE.size[2]
+        let best = null
+        let bestScore = -Infinity
+
+        for (let x = Math.max(8, bounds.x0 + 1); x < Math.min(bounds.x1, N - width - 8); x += 2) {
+            for (let z = Math.max(8, bounds.z0 + 2); z <= Math.min(bounds.z1 - depth - 2, N - depth - 8); z += 2) {
+                let minHeight = H
+                let maxHeight = 0
+                let heightSum = 0
+                let plainsCount = 0
+                let valid = true
+
+                for (let dx = 0; dx < width && valid; dx++) {
+                    for (let dz = 0; dz < depth; dz++) {
+                        const wx = x + dx
+                        const wz = z + dz
+                        if (isInsideStructureFootprint(wx, wz) || desertInfluenceAt(wx, wz) > 0.30) {
+                            valid = false
+                            break
+                        }
+                        const col = ci(wx, wz)
+                        const groundY = heights[col] > 0 ? heights[col] : terrainHeight(wx, wz)
+                        if (groundY <= seaLevel + 2 || plainsInfluence(wx, wz) < 0.40) {
+                            valid = false
+                            break
+                        }
+                        minHeight = Math.min(minHeight, groundY)
+                        maxHeight = Math.max(maxHeight, groundY)
+                        heightSum += groundY
+                        if (plainsInfluence(wx, wz) > 0.55) plainsCount++
+                        if (get(wx, groundY + 1, wz) !== EMPTY) {
+                            valid = false
+                            break
+                        }
+                    }
+                }
+                if (!valid || maxHeight - minHeight > 3 || plainsCount < width * depth * 0.48) continue
+                const score = plainsCount * 10 - (maxHeight - minHeight) * 25 +
+                    rand(x + 8161, z + 8167) * 0.1
+                if (score > bestScore) {
+                    bestScore = score
+                    best = { x, z, groundY: Math.round(heightSum / (width * depth)) }
+                }
+            }
+            if (((x - bounds.x0) & 7) === 7) await yieldToBrowser()
+        }
+        if (!best || best.groundY + OMINOUS_WELL_STRUCTURE.size[1] >= H) return null
+
+        const baseY = best.groundY + 1
+        for (let dx = 0; dx < width; dx++) {
+            for (let dz = 0; dz < depth; dz++) {
+                const wx = best.x + dx
+                const wz = best.z + dz
+                const col = ci(wx, wz)
+                const oldHeight = heights[col] > 0 ? heights[col] : terrainHeight(wx, wz)
+                const clearTo = Math.max(oldHeight, baseY + OMINOUS_WELL_STRUCTURE.size[1] - 1)
+                for (let y = best.groundY + 1; y <= clearTo; y++) {
+                    set(wx, y, wz, EMPTY)
+                    voxelEdits.set(idx(wx, y, wz), EMPTY)
+                }
+                for (let y = oldHeight + 1; y < best.groundY; y++) {
+                    set(wx, y, wz, DIRT)
+                    voxelEdits.set(idx(wx, y, wz), DIRT)
+                }
+                set(wx, best.groundY, wz, GRASS)
+                voxelEdits.set(idx(wx, best.groundY, wz), GRASS)
+                heights[col] = best.groundY
+                waterLevels[col] = EMPTY
+            }
+        }
+        for (const block of OMINOUS_WELL_STRUCTURE.blocks) {
+            const wx = best.x + block.pos[0]
+            const wy = baseY + block.pos[1]
+            const wz = best.z + block.pos[2]
+            set(wx, wy, wz, block.id)
+            voxelEdits.set(idx(wx, wy, wz), block.id)
+        }
+        structureFootprints.push({
+            minX: best.x, maxX: best.x + width - 1,
+            minZ: best.z, maxZ: best.z + depth - 1,
+            baseY,
+            name: "Ominous Well"
+        })
+        return { x: best.x, z: best.z, baseY }
+    }
+
+    const ominousWellPlacement = await placeOminousWell()
+
     for (let x = Math.max(3, bounds.x0 + 3); x < Math.min(N - 3, bounds.x1 - 3); x++) {
         for (let z = Math.max(3, bounds.z0 + 3); z < Math.min(N - 3, bounds.z1 - 3); z++) {
             const col = ci(x,z), h = heights[col]
@@ -3863,6 +3958,20 @@ function applySavedRegionStateForChunk(saved, bounds) {
         if (x < bounds.x0 || x >= bounds.x1 || z < bounds.z0 || z >= bounds.z1) continue
         voxels[cell] = type
         voxelEdits.set(cell, type)
+    }
+    for (const area of structureFootprints) {
+        if (area.name !== "Ominous Well") continue
+        const x0 = Math.max(bounds.x0, area.minX)
+        const x1 = Math.min(bounds.x1, area.maxX + 1)
+        const z0 = Math.max(bounds.z0, area.minZ)
+        const z1 = Math.min(bounds.z1, area.maxZ + 1)
+        for (let x = x0; x < x1; x++) {
+            for (let z = z0; z < z1; z++) {
+                const col = ci(x, z)
+                heights[col] = area.baseY - 1
+                waterLevels[col] = EMPTY
+            }
+        }
     }
     for (const [cell, state] of (saved.flowingWater || [])) {
         const x = cell % N
