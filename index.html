@@ -3306,6 +3306,11 @@ async function processChunkBuildQueue() {
         const builtMeshes = await buildChunk(chunk.cx, chunk.cz)
         if (builtMeshes && buildEpoch === worldGenerationEpoch && desiredChunkKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
             chunkMeshes.set(chunk.key, builtMeshes)
+            const menuStatus = document.getElementById('menuWorldStatus')
+            if (mainMenuOpen && menuStatus) {
+                menuStatus.textContent = 'Building nearby terrain · ' +
+                    chunkMeshes.size + '/' + desiredChunkKeys.size + ' chunks'
+            }
         } else if (builtMeshes) {
             for (const mesh of builtMeshes) {
                 mesh.dispose()
@@ -3320,6 +3325,10 @@ async function processChunkBuildQueue() {
         }
         console.error('Could not build chunk ' + chunk.key, error)
         status.textContent = 'Loading chunk ' + chunk.key + ' will retry. ' + error.message
+        const menuStatus = document.getElementById('menuWorldStatus')
+        if (mainMenuOpen && menuStatus) {
+            menuStatus.textContent = 'Chunk ' + chunk.key + ' failed and will retry: ' + error.message
+        }
     } finally {
         lastChunkBuildMs = performance.now() - buildStartedAt
         chunkBuildBusy = false
@@ -4435,7 +4444,7 @@ async function generate() {
         lastSpaceTapTime = 0
         autoStep = null
         yaw = 0
-        pitch = 0
+        pitch = 0.16
         syncCamera()
         const spawnChunkKey = spawnCX + ',' + spawnCZ
         desiredChunkKeys = new Set([spawnChunkKey])
@@ -4632,7 +4641,6 @@ document.getElementById('m').addEventListener('click', showMainMenu)
 document.getElementById('playBtn').addEventListener('click', hideMainMenu)
 document.getElementById('newWorldBtn').addEventListener('click', () => {
     startNewWorld()
-    hideMainMenu()
 })
 document.getElementById('settingsBtn').addEventListener('click', openSettings)
 document.getElementById('settingsMenuBtn').addEventListener('click', openSettings)
