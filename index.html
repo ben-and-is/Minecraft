@@ -2512,7 +2512,7 @@ async function addTrees() {
     const lordsMarkPlacement = await placeLordsMark()
 
     async function placeOminousWell() {
-        if (rand(8123 + worldRegionX * 23, 8129 + worldRegionZ * 31) > 0.90) return null
+        if (rand(8123 + worldRegionX * 23, 8129 + worldRegionZ * 31) > 0.82) return null
         const targetCX = Math.floor(rand(8137 + worldRegionX * 29, 8141 + worldRegionZ * 37) * (CHUNKS_PER_AXIS - 2))
         const targetCZ = Math.floor(rand(8147 + worldRegionX * 41, 8153 + worldRegionZ * 43) * (CHUNKS_PER_AXIS - 1))
         if (targetCX !== Math.floor(bounds.x0 / CS) || targetCZ !== Math.floor(bounds.z0 / CS)) return null
@@ -2548,10 +2548,13 @@ async function addTrees() {
                         maxHeight = Math.max(maxHeight, groundY)
                         heightSum += groundY
                         if (plainsInfluence(wx, wz) > 0.55) plainsCount++
-                        if (get(wx, groundY + 1, wz) !== EMPTY) {
-                            valid = false
-                            break
+                        for (let checkY = groundY + 1; checkY <= groundY + OMINOUS_WELL_STRUCTURE.size[1]; checkY++) {
+                            if (get(wx, checkY, wz) !== EMPTY) {
+                                valid = false
+                                break
+                            }
                         }
+                        if (!valid) break
                     }
                 }
                 if (!valid || maxHeight - minHeight > 3 || plainsCount < width * depth * 0.48) continue
