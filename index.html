@@ -273,7 +273,6 @@
     <canvas id="c" aria-label="Interactive voxel world"></canvas>
     <div class="ui">
         <strong>🏝️ Voxel World — Archipelago</strong>
-        <p>WASD to move · Shift to run · Ctrl or C to crouch (1.5-block height, half speed) and dive while swimming · Double-tap Space to toggle creative flight<br>While flying: Space rises, C descends, and horizontal speed is doubled.<br>Left-click while the mouse is captured to spawn one test water block; Shift+left-click mines blocks. Natural freshwater and saltwater, gravity-driven flow, high and low ponds, deep rifts, varied islands and rare flat deserts. 4-chunk streamed view radius. Press Esc to open the menu.</p>
         <button id="g" type="button">Generate World</button><button id="m" class="secondary" type="button">Main Menu</button><button id="settingsBtn" class="secondary" type="button">Settings</button>
         <div id="status">Click the world to capture the mouse.</div>
     </div>
@@ -288,20 +287,17 @@ Water mesh: --</div>
         <div class="menu-card">
             <div class="menu-kicker">Procedural voxel exploration</div>
             <h1 id="menuTitle">Voxel World</h1>
-            <p>Explore a living archipelago with rivers, forests, and natural water that follows the terrain as you travel beyond the horizon.</p>
             <div class="menu-actions">
                 <button id="playBtn" type="button">Continue Exploring</button>
                 <button id="newWorldBtn" class="secondary" type="button">New World</button>
                 <button id="settingsMenuBtn" class="secondary" type="button">Settings</button>
             </div>
-            <div class="menu-controls">WASD: move · Mouse: look · Space: jump · Double-tap Space: toggle creative flight · While flying, Space rises and C descends.<br>Esc: open the menu. Water falls under gravity and spreads over reachable ground.</div>
         </div>
     </div>
     <div id="settingsPage" class="menu-screen settings-screen" style="display:none" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
         <div class="menu-card">
             <div class="menu-kicker">World options</div>
             <h1 id="settingsTitle">Settings</h1>
-            <p>Choose the font used by the in-game information panel. This settings page and its controls stay in readable sans-serif.</p>
             <label for="fontFamily">Interface font</label>
             <select id="fontFamily">
                 <option value="sans-serif">Sans-serif (default)</option>
@@ -365,8 +361,6 @@ const WATCHTOWER_STRUCTURE = {
     format: "voxel-structure-v1",
     size: [7, 18, 7],
     origin: [-4, 0, -2],
-    // Exact, fixed block layout from the supplied JSON, encoded as rows:
-    // . = empty, s = stone (id 2), w = wood/log (id 3), p = palm wood (id 8).
     blocks: WATCHTOWER_ROWS.flatMap((layer, y) =>
         layer.flatMap((row, z) =>
             Array.from(row).flatMap((symbol, x) => {
@@ -380,7 +374,7 @@ const WATCHTOWER_STRUCTURE = {
     )
 }
 
-const ANCIENT_RUIN_ROWS = [
+const LORDS_MARK_ROWS = [
     ["sss.....sss", "sssdddddsss", "sssdddddsss", ".ddddddddd.", ".ddddddddd.", ".ddddddddd.", ".ddddddwdd.", ".ddddddddd.", "sssdddddsss", "sssdddddsss", "sss.....sss"],
     ["...........", ".ss.....ss.", ".sssssssss.", "..ssgggss..", "..sgggggs..", "..sgggggs..", "..sgggwws..", "..ssggwss..", ".sssssssss.", ".ss.....ss.", "..........."],
     ["...........", "...........", "...........", "......l....", "...lsss....", "....l......", "...........", "...........", "...........", "...........", "..........."],
@@ -388,12 +382,11 @@ const ANCIENT_RUIN_ROWS = [
     ["...........", "...........", "...........", "...........", ".....ssl...", ".....l.....", "...........", "...........", "...........", "...........", "..........."],
     ["...........", "...........", "...........", "...........", ".....sl....", "...........", "...........", "...........", "...........", "..........."]
 ]
-const ANCIENT_RUIN_STRUCTURE = {
+const LORDS_MARK_STRUCTURE = {
     format: "voxel-structure-v1",
     size: [11, 6, 11],
     origin: [-9, 0, -11],
-    // . = empty, s = stone, d = dirt, g = grass, w = fresh water, l = leaves.
-    blocks: ANCIENT_RUIN_ROWS.flatMap((layer, y) =>
+    blocks: LORDS_MARK_ROWS.flatMap((layer, y) =>
         layer.flatMap((row, z) =>
             Array.from(row).flatMap((symbol, x) => {
                 if (symbol === ".") return []
@@ -402,7 +395,7 @@ const ANCIENT_RUIN_STRUCTURE = {
                 if (symbol === "g") return [{ pos: [x, y, z], type: "grass", id: 0 }]
                 if (symbol === "w") return [{ pos: [x, y, z], type: "fresh_water", id: 7 }]
                 if (symbol === "l") return [{ pos: [x, y, z], type: "leaves", id: 4 }]
-                throw new Error("Unknown ancient ruin template symbol: " + symbol)
+                throw new Error("Unknown Lord's Mark template symbol: " + symbol)
             })
         )
     )
@@ -433,9 +426,6 @@ const materials = colors.map((color, i) => {
     const m = new BABYLON.StandardMaterial('mat' + i, scene)
     m.diffuseColor = BABYLON.Color3.FromHexString(color)
     m.specularColor = BABYLON.Color3.Black()
-    // Greedy quads have correct outward normals, but browser/GPU winding conventions
-    // can differ with the engine's left-handed scene. Render both sides so valid faces
-    // cannot disappear due to back-face culling.
     m.backFaceCulling = false
 
     if (i === WATER || i === FRESH_WATER) {
@@ -1298,8 +1288,6 @@ async function createPonds() {
             pond.level = clamp(Math.round(best.landHeight - basinDepth), 3, H - 12)
             pond.resolved = true
 
-            // Ensure there is a continuous natural bank below the waterline.
-            // A basin open directly to low seabed becomes sea-level or is omitted.
             let lowestBank = Infinity
             const bankRadiusX = Math.ceil(pond.rx * 2.25 + (pond.warp || 0) + 4)
             const bankRadiusZ = Math.ceil(pond.rz * 2.25 + (pond.warp || 0) + 4)
@@ -1367,8 +1355,6 @@ async function createPonds() {
                     if (heights[col] >= pond.level) heights[col] = Math.max(1, pond.level - 1)
                     waterLevels[col] = pond.level
                 } else if (originalHeight > seaLevel && originalHeight > pond.level) {
-                    // Blend over a broader, noisy shoreline. The terrain is only lowered;
-                    // small undulations make the bank look eroded rather than constructed.
                     const t = clamp((edge - 0.88) / 0.80, 0, 1)
                     const smooth = t * t * (3 - 2 * t)
                     const bankUndulation = (noise(
@@ -1384,8 +1370,6 @@ async function createPonds() {
             if (((x - x0) & 7) === 7) await yieldToBrowser()
         }
 
-        // No raised ring or retaining wall: shore shape comes from terrain carving
-        // and a broad irregular blend into the naturally generated surrounding land.
     }
 }
 
@@ -1534,14 +1518,14 @@ async function voxelize() {
     }
 }
 
-
-const WATER_STEP_INTERVAL = 0.04
+const WATER_STEP_INTERVAL = 0.08
 const WATER_CELLS_PER_STEP = 96
 let waterPhysicsSnapshot = []
 let waterPhysicsSnapshotCursor = 0
 let waterPhysicsSnapshotMap = null
 const WATER_MAX_HORIZONTAL_STEPS = 3
-const WATER_HORIZONTAL_COOLDOWN_TICKS = 4
+const WATER_HORIZONTAL_COOLDOWN_TICKS = 8
+const WATER_FALL_COOLDOWN_TICKS = 3
 const WATER_DIRECTIONS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 
 function markWaterChunkDirty(x, z) {
@@ -1558,9 +1542,6 @@ function markWaterChunkDirty(x, z) {
 }
 
 function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
-    // Mining wakes cells across the three-block detection radius. Routine flow
-    // only activates inactive neighbours; it must never reset an active cell's
-    // horizontal cooldown or travel budget, otherwise water appears to teleport.
     for (let dx = -radius; dx <= radius; dx++) {
         for (let dz = -radius; dz <= radius; dz++) {
             if (Math.abs(dx) + Math.abs(dz) > radius) continue
@@ -1605,9 +1586,6 @@ function wakeAdjacentWaterCells(x, y, z, radius = 1, resetReach = false) {
 }
 
 async function fillWaterBodiesForChunk() {
-    // The terrain, basin, river, and feature passes complete before this runs.
-    // Fill every empty voxel from each column's ground to its waterline. This
-    // operation only adds missing water; it never deletes ocean or lake blocks.
     const bounds = getActiveGenerationBounds()
     for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
         for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
@@ -1624,18 +1602,13 @@ async function fillWaterBodiesForChunk() {
     }
 }
 
-
 function setFluidVoxel(x, y, z, type) {
-    // Fluid positions are transient simulation state, not persistent player edits.
     const tracking = trackVoxelEdits
     trackVoxelEdits = false
     try { set(x, y, z, type) } finally { trackVoxelEdits = tracking }
 }
 
 async function flowWaterDownhill() {
-    // Do not enqueue every natural lake/ocean shoreline for perpetual physics.
-    // Static bodies stay cheap; mining a block wakes only exposed nearby water,
-    // and the one-block click test adds its single voxel directly to the solver.
 }
 
 function findNearestWaterDropStep(x, y, z, maxHorizontalSteps) {
@@ -1644,8 +1617,6 @@ function findNearestWaterDropStep(x, y, z, maxHorizontalSteps) {
     const visited = new Set([x + ',' + z])
     let head = 0
 
-    // Breadth-first search guarantees the nearest open drop wins. The search may
-    // walk only across air cells supported by solid ground, and never through blocks.
     while (head < queue.length) {
         const node = queue[head++]
         if (node.depth >= maxHorizontalSteps) continue
@@ -1663,8 +1634,6 @@ function findNearestWaterDropStep(x, y, z, maxHorizontalSteps) {
             const firstX = node.depth === 0 ? nx : node.firstX
             const firstZ = node.depth === 0 ? nz : node.firstZ
 
-            // Empty space below means a true fall; water below means this route
-            // drains into an existing pool instead of leaving a naked water face.
             if (below === EMPTY || isWaterBlock(below)) {
                 return { x: firstX, z: firstZ, distance: depth }
             }
@@ -1678,7 +1647,26 @@ function findNearestWaterDropStep(x, y, z, maxHorizontalSteps) {
 }
 
 function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
-    if (get(nx, ny, nz) !== EMPTY) return false
+    const destination = get(nx, ny, nz)
+    if (destination !== EMPTY) {
+        if (isWaterBlock(destination)) {
+            const oldCell = idx(x, y, z)
+            const collisionCell = idx(nx, ny, nz)
+            flowingWater.delete(oldCell)
+            if (!flowingWater.has(collisionCell)) {
+                flowingWater.set(collisionCell, {
+                    horizontalSteps: 0,
+                    horizontalTicks: WATER_HORIZONTAL_COOLDOWN_TICKS,
+                    falling: false,
+                    surface: true
+                })
+            }
+            markWaterChunkDirty(x, z)
+            markWaterChunkDirty(nx, nz)
+            return true
+        }
+        return false
+    }
     const oldCell = idx(x, y, z)
     flowingWater.delete(oldCell)
     setFluidVoxel(x, y, z, EMPTY)
@@ -1692,8 +1680,6 @@ function moveFlowingWater(x, y, z, nx, ny, nz, state, type) {
             (movedHorizontally ? (state.horizontalSteps || 0) + 1 : (state.horizontalSteps || 0)),
         horizontalTicks: movedHorizontally ? 0 : WATER_HORIZONTAL_COOLDOWN_TICKS,
         falling: movedDown,
-        // Only the original filled-surface cell bypasses the "water below" merge.
-        // Any moved cell must merge if it reaches a pool, rather than stack above it.
         surface: false
     })
     markWaterChunkDirty(x, z)
@@ -1716,22 +1702,21 @@ function simulateWaterCell(cell, state) {
     if (y > 0) {
         const below = get(x, y - 1, z)
         if (below === EMPTY) {
-            // Gravity wins over horizontal spreading: one voxel falls per physics
-            // interval (25 blocks/second), close to the player's terminal fall speed.
+            state.fallTicks = (state.fallTicks || 0) + 1
+            if (state.fallTicks < WATER_FALL_COOLDOWN_TICKS) return
+            state.fallTicks = 0
             moveFlowingWater(x, y, z, x, y - 1, z, state, type)
             return
         }
         if (isWaterBlock(below) && !state.surface) {
-            // A moving droplet merges into an existing water column instead of
-            // leaving a second, unsupported block stacked on top of the pool.
             flowingWater.delete(cell)
-            setFluidVoxel(x, y, z, EMPTY)
+            state.surface = true
+            state.falling = false
+            state.fallTicks = 0
+            state.horizontalTicks = WATER_HORIZONTAL_COOLDOWN_TICKS
             markWaterChunkDirty(x, z)
-            wakeAdjacentWaterCells(x, y, z, 1, false)
             return
         }
-        // Surface cells often have water directly beneath them. They must still
-        // reach the horizontal-flow logic below or lakes and oceans never spill.
     }
 
     const remainingHorizontal = WATER_MAX_HORIZONTAL_STEPS -
@@ -1747,9 +1732,6 @@ function simulateWaterCell(cell, state) {
             return
         }
 
-        // No drop nearby: flow over the exposed, supported sides, but only within
-        // the three-block horizontal run. Each actual water voxel takes one route;
-        // other exposed pool-edge voxels can independently take the other routes.
         const openSides = []
         for (const [dx, dz] of WATER_DIRECTIONS) {
             const nx = x + dx, nz = z + dz
@@ -1778,8 +1760,6 @@ function simulateWaterCell(cell, state) {
         }
     }
 
-    // Keep stable water in the active set. It checks again every tick, so opening
-    // a route beside/below it (for example by removing a block) resumes flow.
     state.horizontalTicks = Math.min(
         WATER_HORIZONTAL_COOLDOWN_TICKS,
         (state.horizontalTicks || 0) + 1
@@ -1826,7 +1806,6 @@ function updateWaterPhysics(dt) {
         }
     }
 }
-
 
 async function processDirtyWaterChunks() {
     if (chunkBuildBusy || worldTransitioning || settingsOpen || !dirtyWaterChunks.size) return
@@ -2114,8 +2093,6 @@ async function pruneFloatingArtifacts() {
     const bounds = getActiveGenerationBounds()
     for (let x = Math.max(1, bounds.x0); x < Math.min(N - 1, bounds.x1); x++) {
         for (let z = Math.max(1, bounds.z0); z < Math.min(N - 1, bounds.z1); z++) {
-            // Preserve the watchtower's exact supplied template, including its
-            // intentionally unsupported top roof block and upper roof details.
             if (isInsideStructureFootprint(x, z)) continue
             const ground = heights[ci(x,z)]
             for (let y = Math.max(1, ground + 1); y < H - 1; y++) {
@@ -2194,7 +2171,6 @@ async function addTrees() {
     }
 
     function placePalm(x, z, h) {
-        // Palm tree: 3–4 palm logs, with the supplied sparse frond ring and layered crown.
         const logLength = 3 + Math.floor(rand(x + 3137, z + 3163) * 2)
         if (h + 1 + logLength >= H) return false
         for (let y = h + 1; y <= h + logLength; y++) {
@@ -2210,7 +2186,6 @@ async function addTrees() {
             setIfClear(x + dx, frondBaseY, z + dz, PALM_LEAVES)
         }
 
-        // Broad 5x5 layer with its corners omitted; the trunk continues through the center.
         const broadY = h + logLength
         for (let dx = -2; dx <= 2; dx++) {
             for (let dz = -2; dz <= 2; dz++) {
@@ -2220,7 +2195,6 @@ async function addTrees() {
             }
         }
 
-        // Four raised fronds at the very top, matching the provided palm template.
         const topY = h + 1 + logLength
         for (const [dx,dz] of [[0,-1],[-1,0],[1,0],[0,1]]) {
             setIfClear(x + dx, topY, z + dz, PALM_LEAVES)
@@ -2229,7 +2203,6 @@ async function addTrees() {
     }
 
     function placeNormalTree(x, z, h) {
-        // Plain oak: use the supplied 5x6x5 canopy; randomize only the vertical log length.
         const logLength = 4 + Math.floor(rand(x + 47, z + 31) * 3)
         if (h + logLength + 2 >= H) return false
 
@@ -2253,7 +2226,6 @@ async function addTrees() {
         }
         addCell(0, logLength + 1, 0, LEAVES)
 
-        // Skip a tree if its trunk or canopy would occupy existing terrain or another tree.
         for (const cell of cells) {
             if (cell.x < 0 || cell.x >= N || cell.z < 0 || cell.z >= N ||
                 cell.y < 0 || cell.y >= H || get(cell.x, cell.y, cell.z) !== EMPTY) {
@@ -2265,7 +2237,6 @@ async function addTrees() {
     }
 
     function placePineTree(x, z, h) {
-        // Pine tree: 7–8 dark logs, with the supplied tapered, layered pine-leaf crown.
         const logLength = 7 + Math.floor(rand(x + 3251, z + 3257) * 2)
         if (h + 1 + logLength >= H) return false
         for (let y = h + 1; y <= h + logLength; y++) {
@@ -2292,8 +2263,6 @@ async function addTrees() {
         return true
     }
     async function placeWatchtower() {
-        // Rare by region, but only eligible inside a dense pine forest.
-        // The template blocks themselves are fixed and never randomized.
         if (rand(6419 + worldRegionX * 29, 6421 + worldRegionZ * 31) > 0.28) return null
 
         const targetCX = Math.floor(rand(6473 + worldRegionX * 17, 6479 + worldRegionZ * 23) * CHUNKS_PER_AXIS)
@@ -2303,8 +2272,6 @@ async function addTrees() {
         let best = null
         let bestScore = -Infinity
 
-        // Scan candidate footprints with overlap-safe spacing; choose the densest,
-        // flattest valid pine site so the tower can sit on a real ground platform.
         for (let x = firstAligned(Math.max(8, bounds.x0), 8, 5); x <= Math.min(N - 9, bounds.x1 - 7); x += 5) {
             for (let z = firstAligned(Math.max(8, bounds.z0), 8, 5); z <= Math.min(N - 9, bounds.z1 - 7); z += 5) {
                 if (!isPineForestAt(x + 3, z + 3)) continue
@@ -2334,8 +2301,6 @@ async function addTrees() {
                     }
                 }
 
-                // Require at least 80% pine coverage over the footprint and a
-                // small enough height difference to safely level the foundation.
                 if (!valid || pineCount < 40 || maxHeight - minHeight > 2) continue
 
                 const flatnessPenalty = (maxHeight - minHeight) * 25
@@ -2355,9 +2320,6 @@ async function addTrees() {
         const baseY = groundY + 1
         if (baseY + WATCHTOWER_STRUCTURE.size[1] - 1 >= H) return null
 
-        // Preflight the entire 7x18x7 volume, including the template's empty
-        // cells, before changing terrain. Refuse any site with water, trees, or
-        // another feature suspended above the existing ground.
         for (let dx = 0; dx < WATCHTOWER_STRUCTURE.size[0]; dx++) {
             for (let dz = 0; dz < WATCHTOWER_STRUCTURE.size[2]; dz++) {
                 const wx = best.x + dx, wz = best.z + dz
@@ -2369,8 +2331,6 @@ async function addTrees() {
             }
         }
 
-        // Level the small footprint before placing blocks: cut the high columns,
-        // fill the low ones, and update height metadata consistently.
         for (let dx = 0; dx < 7; dx++) {
             for (let dz = 0; dz < 7; dz++) {
                 const wx = best.x + dx, wz = best.z + dz
@@ -2388,8 +2348,6 @@ async function addTrees() {
             }
         }
 
-        // The complete site was preflighted and leveled above; the following
-        // loop writes the immutable template exactly once, with no partial fallback.
         for (const block of WATCHTOWER_STRUCTURE.blocks) {
             set(best.x + block.pos[0], baseY + block.pos[1], best.z + block.pos[2], block.id)
         }
@@ -2405,15 +2363,14 @@ async function addTrees() {
 
     const watchtowerPlacement = await placeWatchtower()
 
-    async function placeAncientRuin() {
-        // An uncommon, fixed-layout ruin may appear on an eligible plains site per region.
+    async function placeLordsMark() {
         if (rand(7103 + worldRegionX * 13, 7109 + worldRegionZ * 17) > 0.82) return null
         const targetCX = Math.floor(rand(7151 + worldRegionX * 19, 7159 + worldRegionZ * 23) * CHUNKS_PER_AXIS)
         const targetCZ = Math.floor(rand(7177 + worldRegionX * 29, 7187 + worldRegionZ * 31) * CHUNKS_PER_AXIS)
         if (targetCX !== Math.floor(bounds.x0 / CS) || targetCZ !== Math.floor(bounds.z0 / CS)) return null
         const seaLevel = oceans[0].level
-        const width = ANCIENT_RUIN_STRUCTURE.size[0]
-        const depth = ANCIENT_RUIN_STRUCTURE.size[2]
+        const width = LORDS_MARK_STRUCTURE.size[0]
+        const depth = LORDS_MARK_STRUCTURE.size[2]
         let best = null
         let bestScore = -Infinity
 
@@ -2455,14 +2412,14 @@ async function addTrees() {
         if (!best) return null
         const groundY = Math.round(best.heightSum / (width * depth))
         const baseY = groundY + 1
-        if (baseY + ANCIENT_RUIN_STRUCTURE.size[1] - 1 >= H) return null
+        if (baseY + LORDS_MARK_STRUCTURE.size[1] - 1 >= H) return null
 
         for (let dx = 0; dx < width; dx++) {
             for (let dz = 0; dz < depth; dz++) {
                 const wx = best.x + dx, wz = best.z + dz
                 const oldHeight = heights[ci(wx, wz)]
                 for (let wy = Math.max(baseY, oldHeight + 1);
-                    wy < baseY + ANCIENT_RUIN_STRUCTURE.size[1]; wy++) {
+                    wy < baseY + LORDS_MARK_STRUCTURE.size[1]; wy++) {
                     if (get(wx, wy, wz) !== EMPTY) return null
                 }
             }
@@ -2482,19 +2439,19 @@ async function addTrees() {
                 waterLevels[col] = EMPTY
             }
         }
-        for (const block of ANCIENT_RUIN_STRUCTURE.blocks) {
+        for (const block of LORDS_MARK_STRUCTURE.blocks) {
             set(best.x + block.pos[0], baseY + block.pos[1], best.z + block.pos[2], block.id)
         }
         structureFootprints.push({
             minX: best.x, maxX: best.x + width - 1,
             minZ: best.z, maxZ: best.z + depth - 1,
             baseY,
-            name: "ancient-ruin-1"
+            name: "Lord's Mark"
         })
         return { x: best.x, z: best.z, baseY }
     }
 
-    const ancientRuinPlacement = await placeAncientRuin()
+    const lordsMarkPlacement = await placeLordsMark()
 
     for (let x = Math.max(3, bounds.x0 + 3); x < Math.min(N - 3, bounds.x1 - 3); x++) {
         for (let z = Math.max(3, bounds.z0 + 3); z < Math.min(N - 3, bounds.z1 - 3); z++) {
@@ -2535,7 +2492,6 @@ async function addTrees() {
             } else if (inPineForest && rand(x + 3337,z + 3343) < 0.70) {
                 if (!placePineTree(x,z,h)) placeNormalTree(x,z,h)
             } else {
-                // Pines are biome-exclusive; plains and ordinary forests use oak trees.
                 placeNormalTree(x,z,h)
             }
         }
@@ -2823,7 +2779,6 @@ function getChunkDecorationBuffers(data, chunkX, chunkZ) {
     const cached = data.decorationBuffersByChunk.get(key)
     if (cached) return cached
 
-    // Build only this chunk's plant details, using the region's terrain context.
     const live = captureRegionGlobals()
     try {
         restoreRegionGlobals(data)
@@ -2862,8 +2817,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
         if (x >= 0 && x < N && z >= 0 && z < N) {
             return data.voxels[idx(x, y, z)]
         }
-        // Sample across region edges only from already-generated neighbor chunks.
-        // Missing neighbor data is empty, never imaginary ocean water that hides faces.
         let sampleRegionX = regionX, sampleRegionZ = regionZ
         if (x < 0) { sampleRegionX--; x += N }
         else if (x >= N) { sampleRegionX++; x -= N }
@@ -2879,7 +2832,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
         return sampleData.voxels[idx(x, y, z)]
     }
 
-    // Use height/water metadata instead of scanning the full vertical column.
     let maxY = 0
     for (let z = z0; z < z1; z++) {
         for (let x = x0; x < x1; x++) {
@@ -2890,8 +2842,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
         }
     }
 
-    // Dynamic water can be placed above the static terrain surface (for example
-    // while flying), so a water-only mesh must include every active water voxel.
     if (waterOnly && data.flowingWater) {
         for (const cell of data.flowingWater.keys()) {
             const x = cell % N
@@ -2906,7 +2856,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
         ? neighbor === EMPTY
         : neighbor === EMPTY || isWaterBlock(neighbor)
 
-    // Greedy meshing merges coplanar faces of the same material into rectangles.
     for (let d = 0; d < 3; d++) {
         const u = (d + 1) % 3
         const v = (d + 2) % 3
@@ -2933,8 +2882,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
                     const aInside = slice >= 0
                     const bInside = slice + 1 < dimensions[d]
                     let code = 0
-                    // The face is owned by the inside voxel and is omitted only
-                    // when a neighboring solid block truly covers it.
                     if (aInside && a !== EMPTY && (!waterOnly || isWaterBlock(a)) && faceVisible(a, b)) code = a + 1
                     else if (bInside && b !== EMPTY && (!waterOnly || isWaterBlock(b)) && faceVisible(b, a)) code = -(b + 1)
                     mask[n++] = code
@@ -2983,9 +2930,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
                         if (type === LEAVES) group.c.push(1, 1, 1, 1)
                     }
                     group.u.push(0, 0, width, 0, width, height, 0, height)
-                    // Vertex order already follows the face sign. Reversing
-                    // indices again for negative faces flips their winding back
-                    // to positive and causes back-face culling to hide them.
                     group.i.push(base, base + 1, base + 2, base, base + 2, base + 3)
 
                     for (let yy = 0; yy < height; yy++) {
@@ -3015,8 +2959,6 @@ async function buildChunk(cx, cz, waterOnly = false) {
     }
     return chunkList
 }
-
-
 
 function unloadChunk(key) {
     dirtyWaterChunks.delete(key)
@@ -3052,9 +2994,6 @@ function updateChunkLoading(force = false) {
         if (!wantedKeys.has(key)) unloadChunk(key)
     }
 
-    // Preserve queued builds that are still inside the radius. Replacing the
-    // whole queue every time the player crosses a chunk boundary discarded work
-    // and made loading appear to restart. Append only newly needed chunks.
     const queued = new Map()
     for (const chunk of pendingChunkQueue) {
         if (wantedKeys.has(chunk.key) && !chunkMeshes.has(chunk.key)) {
@@ -3833,8 +3772,6 @@ async function generateRegionData(regionX, regionZ) {
             await yieldToBrowser()
         }
 
-        // Region generation establishes only shared feature metadata; terrain
-        // is generated separately, chunk-by-chunk, on demand.
         await runFeatureStage(createWorldFeatures)
         if (epoch !== worldGenerationEpoch) throw new Error('Region generation superseded by a new world')
         const generated = Object.assign({}, work, {
@@ -3860,8 +3797,9 @@ async function generateRegionData(regionX, regionZ) {
 }
 
 function applySavedRegionStateForChunk(saved, bounds) {
-    if (!saved) return
-    for (const [cell, type] of (saved.edits || [])) {
+    const edits = new Map(saved?.edits || [])
+    for (const [cell, type] of voxelEdits) edits.set(cell, type)
+    for (const [cell, type] of edits) {
         const x = cell % N
         const z = Math.floor(cell / N) % N
         if (x < bounds.x0 || x >= bounds.x1 || z < bounds.z0 || z >= bounds.z1) continue
@@ -4067,8 +4005,6 @@ async function generate() {
         if (epoch !== worldGenerationEpoch) return
         activateRegionData(initialRegion)
 
-        // Find a plausible nearby land candidate from features, then generate
-        // only its chunk before validating safe standing positions.
         let spawnCandidate = null
         let spawnScore = Infinity
         const seaLevel = oceans[0].level
