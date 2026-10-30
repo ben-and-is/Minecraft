@@ -224,7 +224,6 @@
 
     #perfOverlay {
         position: fixed;
-        z-index: 7;
         top: 12px;
         right: 12px;
         z-index: 20;
@@ -539,6 +538,7 @@ const OMINOUS_WELL_STRUCTURE = {
 const camera = new BABYLON.UniversalCamera(
     'cam', new BABYLON.Vector3(N / 2, 10, N / 2), scene
 )
+scene.activeCamera = camera
 camera.minZ = .05
 camera.fov = 1.15
 camera.inputs.clear()
